@@ -18,7 +18,130 @@
                         <i class="fas fa-newspaper me-3"></i>
                         Newspaper Summary
                     </h1>
-                    <p class="lead text-muted">Upload Economic Times PDF for AI-powered summarization</p>
+                    <p class="lead text-muted">Upload Economic Times PDF for AI-powered summarization or create AI voiceovers directly</p>
+                </div>
+
+                <!-- Standalone AI Voiceover Section -->
+                <div class="card shadow-lg mb-4">
+                    <div class="card-header bg-info text-white">
+                        <h4 class="mb-0">
+                            <i class="fas fa-microphone me-2"></i>
+                            Standalone AI Voiceover Generator
+                        </h4>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <p class="mb-0">
+                                    <i class="fas fa-info-circle me-2 text-info"></i>
+                                    Create professional AI voiceovers directly without uploading any PDF. Perfect for custom announcements, summaries, or any text content.
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                <button class="btn btn-info" id="show-standalone-voiceover-btn">
+                                    <i class="fas fa-play me-2"></i>Create Voiceover Now
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Standalone Voiceover Panel (hidden by default) -->
+                        <div id="standalone-voiceover-panel" style="display: none;">
+                            <hr class="my-4">
+                            
+                            <!-- Text Input -->
+                            <div class="mb-4">
+                                <label for="standalone-voiceover-text" class="form-label">
+                                    <i class="fas fa-pen me-2"></i>Enter Text for Voiceover
+                                </label>
+                                <textarea class="form-control" id="standalone-voiceover-text" rows="6" 
+                                    placeholder="Enter the text you want to convert to AI voiceover. You can paste news summaries, announcements, or any content..."></textarea>
+                                <small class="text-muted">Tip: For best results, use clear, well-structured text with proper punctuation.</small>
+                            </div>
+
+                            <!-- Voice Settings Row -->
+                            <div class="row mb-4">
+                                <div class="col-md-4">
+                                    <label for="standalone-voice-select" class="form-label">
+                                        <i class="fas fa-user-alt me-2"></i>Voice Type
+                                    </label>
+                                    <select class="form-control" id="standalone-voice-select">
+                                        <option value="alloy">Alloy (Neutral)</option>
+                                        <option value="echo">Echo (Deep)</option>
+                                        <option value="fable">Fable (Expressive)</option>
+                                        <option value="onyx">Onyx (Professional)</option>
+                                        <option value="nova" selected>Nova (Clear)</option>
+                                        <option value="shimmer">Shimmer (Warm)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="standalone-speed-select" class="form-label">
+                                        <i class="fas fa-tachometer-alt me-2"></i>Speech Speed
+                                    </label>
+                                    <select class="form-control" id="standalone-speed-select">
+                                        <option value="0.7">Slow (0.7x)</option>
+                                        <option value="1.0" selected>Normal (1.0x)</option>
+                                        <option value="1.2">Fast (1.2x)</option>
+                                        <option value="1.5">Very Fast (1.5x)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="standalone-format-select" class="form-label">
+                                        <i class="fas fa-file-audio me-2"></i>Output Format
+                                    </label>
+                                    <select class="form-control" id="standalone-format-select">
+                                        <option value="mp3" selected>MP3 Audio</option>
+                                        <option value="wav">WAV Audio</option>
+                                        <option value="mp4">MP4 Video</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <!-- Generate Button -->
+                            <div class="text-center mb-3">
+                                <button class="btn btn-info btn-lg" id="generate-standalone-voiceover-btn">
+                                    <i class="fas fa-magic me-2"></i>Generate AI Voiceover
+                                </button>
+                            </div>
+
+                            <!-- Progress Section -->
+                            <div id="standalone-voiceover-progress" style="display: none;">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0">
+                                        <i class="fas fa-microphone me-2"></i>
+                                        Generating AI Voiceover...
+                                    </h6>
+                                    <span class="badge bg-info" id="standalone-voiceover-status">Processing</span>
+                                </div>
+                                <div class="progress mb-2">
+                                    <div class="progress-bar bg-info" id="standalone-voiceover-progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                                <small class="text-muted" id="standalone-voiceover-message">Preparing voiceover generation...</small>
+                            </div>
+
+                            <!-- Result Section -->
+                            <div id="standalone-voiceover-result" style="display: none;">
+                                <hr class="my-4">
+                                <h5><i class="fas fa-headphones me-2"></i>Generated Voiceover</h5>
+                                <div class="voiceover-player bg-light p-4 rounded">
+                                    <div class="row align-items-center">
+                                        <div class="col-md-8">
+                                            <audio id="standalone-voiceover-audio" controls class="w-100" style="display: none;">
+                                                Your browser does not support the audio element.
+                                            </audio>
+                                            <video id="standalone-voiceover-video" controls class="w-100" style="display: none;">
+                                                Your browser does not support the video element.
+                                            </video>
+                                        </div>
+                                        <div class="col-md-4 text-center">
+                                            <button class="btn btn-success" id="download-standalone-voiceover-btn">
+                                                <i class="fas fa-download me-2"></i>Download
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Mode Selection -->
@@ -235,6 +358,144 @@
                             <hr>
                             <h5><i class="fas fa-file-alt me-2"></i>Document Summary</h5>
                             <div class="summary-content" id="summary-text"></div>
+                            
+                            <!-- Generate Voiceover Button -->
+                            <div class="text-center mt-4">
+                                <button class="btn btn-info btn-lg" id="generate-voiceover-btn">
+                                    <i class="fas fa-microphone me-2"></i>Generate AI Voiceover
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Voiceover Section -->
+                <div id="voiceover-section" class="card shadow-lg mb-4" style="display: none;">
+                    <div class="card-header bg-info text-white">
+                        <h4 class="mb-0">
+                            <i class="fas fa-microphone me-2"></i>
+                            AI Voiceover Generation
+                        </h4>
+                    </div>
+                    <div class="card-body">
+                        <!-- Voiceover Mode Selection -->
+                        <div class="row mb-4">
+                            <div class="col-md-6">
+                                <div class="form-check form-check-custom">
+                                    <input class="form-check-input" type="radio" name="voiceover-mode" id="summary-voice-mode" value="summary" checked>
+                                    <label class="form-check-label" for="summary-voice-mode">
+                                        <div class="mode-option">
+                                            <i class="fas fa-file-audio fa-2x text-info mb-2"></i>
+                                            <h5>Summary to Voice</h5>
+                                            <p class="text-muted">Convert the AI-generated summary to voiceover</p>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-check form-check-custom">
+                                    <input class="form-check-input" type="radio" name="voiceover-mode" id="custom-voice-mode" value="custom">
+                                    <label class="form-check-label" for="custom-voice-mode">
+                                        <div class="mode-option">
+                                            <i class="fas fa-keyboard fa-2x text-success mb-2"></i>
+                                            <h5>Custom Text to Voice</h5>
+                                            <p class="text-muted">Enter custom text for voiceover generation</p>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Custom Text Input (hidden by default) -->
+                        <div id="custom-text-container" class="mb-3" style="display: none;">
+                            <label for="voiceover-text" class="form-label">
+                                <i class="fas fa-pen me-2"></i>Custom Text for Voiceover
+                            </label>
+                            <textarea class="form-control" id="voiceover-text" rows="6" 
+                                placeholder="Enter the text you want to convert to voiceover..."></textarea>
+                        </div>
+
+                        <!-- Voice Settings -->
+                        <div class="row mb-4">
+                            <div class="col-md-4">
+                                <label for="voice-select" class="form-label">
+                                    <i class="fas fa-user-alt me-2"></i>Voice Type
+                                </label>
+                                <select class="form-control" id="voice-select">
+                                    <option value="alloy">Alloy (Neutral)</option>
+                                    <option value="echo">Echo (Deep)</option>
+                                    <option value="fable">Fable (Expressive)</option>
+                                    <option value="onyx">Onyx (Professional)</option>
+                                    <option value="nova" selected>Nova (Clear)</option>
+                                    <option value="shimmer">Shimmer (Warm)</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="speed-select" class="form-label">
+                                    <i class="fas fa-tachometer-alt me-2"></i>Speech Speed
+                                </label>
+                                <select class="form-control" id="speed-select">
+                                    <option value="0.7">Slow (0.7x)</option>
+                                    <option value="1.0" selected>Normal (1.0x)</option>
+                                    <option value="1.2">Fast (1.2x)</option>
+                                    <option value="1.5">Very Fast (1.5x)</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="format-select" class="form-label">
+                                    <i class="fas fa-file-audio me-2"></i>Output Format
+                                </label>
+                                <select class="form-control" id="format-select">
+                                    <option value="mp3" selected>MP3 Audio</option>
+                                    <option value="wav">WAV Audio</option>
+                                    <option value="mp4">MP4 Video</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <!-- Generate Voiceover Button -->
+                        <div class="text-center mb-3">
+                            <button class="btn btn-info btn-lg" id="start-voiceover-btn">
+                                <i class="fas fa-play me-2"></i>Generate Voiceover
+                            </button>
+                        </div>
+
+                        <!-- Voiceover Progress -->
+                        <div id="voiceover-progress-container" style="display: none;">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0">
+                                    <i class="fas fa-microphone me-2"></i>
+                                    Generating AI Voiceover...
+                                </h6>
+                                <span class="badge bg-info" id="voiceover-status">Processing</span>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar bg-info" id="voiceover-progress" role="progressbar" style="width: 0%"></div>
+                            </div>
+                            <small class="text-muted" id="voiceover-message">Preparing audio generation...</small>
+                        </div>
+
+                        <!-- Voiceover Result -->
+                        <div id="voiceover-result" style="display: none;">
+                            <hr>
+                            <h5><i class="fas fa-headphones me-2"></i>Generated Voiceover</h5>
+                            <div class="voiceover-player bg-light p-4 rounded">
+                                <div class="row align-items-center">
+                                    <div class="col-md-8">
+                                        <audio id="voiceover-audio" controls class="w-100" style="display: none;">
+                                            Your browser does not support the audio element.
+                                        </audio>
+                                        <video id="voiceover-video" controls class="w-100" style="display: none;">
+                                            Your browser does not support the video element.
+                                        </video>
+                                    </div>
+                                    <div class="col-md-4 text-center">
+                                        <button class="btn btn-success" id="download-voiceover-btn">
+                                            <i class="fas fa-download me-2"></i>Download
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>

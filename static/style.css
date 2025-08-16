@@ -89,6 +89,14 @@ body {
     transform: scale(1.1);
 }
 
+.form-check-custom .form-check-input:checked + .form-check-label .mode-option i.fa-file-audio {
+    color: #0dcaf0 !important;
+}
+
+.form-check-custom .form-check-input:checked + .form-check-label .mode-option i.fa-keyboard {
+    color: #198754 !important;
+}
+
 .mode-option i {
     font-size: 2.5rem;
     color: #6c757d;
@@ -205,6 +213,12 @@ body {
     animation: shimmer 2s infinite;
 }
 
+.progress-bar.bg-info {
+    background: linear-gradient(90deg, #0dcaf0, #20c997, #198754);
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite;
+}
+
 @keyframes shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
@@ -314,6 +328,18 @@ body {
 .btn-warning:hover {
     background: linear-gradient(135deg, #ffca2c, #e8681a);
     color: #212529;
+}
+
+.btn-info {
+    background: linear-gradient(135deg, #0dcaf0, #087990);
+    color: white;
+}
+
+.btn-info:hover {
+    background: linear-gradient(135deg, #0aa2c0, #065d70);
+    color: white;
+    transform: translateY(-3px);
+    box-shadow: 0 8px 25px rgba(13, 202, 240, 0.3);
 }
 
 .btn-lg {
@@ -432,6 +458,19 @@ body {
     .display-4 {
         font-size: 2rem;
     }
+
+    .voiceover-player .row {
+        flex-direction: column;
+    }
+    
+    .voiceover-player .col-md-8,
+    .voiceover-player .col-md-4 {
+        margin-bottom: 15px;
+    }
+    
+    #download-voiceover-btn {
+        width: 100%;
+    }
 }
 
 /* Loading Spinner */
@@ -495,4 +534,91 @@ h1, h2, h3, h4, h5, h6 {
 
 .summary-content::-webkit-scrollbar-thumb:hover {
     background: #0056b3;
+}
+
+/* Voiceover Player Styling */
+.voiceover-player {
+    border: 2px solid #e9ecef;
+    border-radius: 15px;
+    background: linear-gradient(145deg, #f8f9fa, #ffffff);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    transition: all 0.3s ease;
+}
+
+.voiceover-player:hover {
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+}
+
+/* Audio/Video Controls */
+audio, video {
+    border-radius: 10px;
+    background: #000;
+    border: 2px solid #dee2e6;
+}
+
+audio:focus, video:focus {
+    outline: 2px solid #0d6efd;
+    outline-offset: 2px;
+}
+
+/* Media Player Enhancements */
+.voiceover-player audio,
+.voiceover-player video {
+    max-width: 100%;
+    height: auto;
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+/* Download Button for Voiceover */
+#download-voiceover-btn {
+    min-width: 140px;
+    font-weight: 600;
+}
+
+/* Custom Text Container Animation */
+#custom-text-container {
+    transition: all 0.3s ease;
+}
+
+#custom-text-container.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+#custom-text-container.hide {
+    opacity: 0;
+    transform: translateY(-10px);
+}
+
+/* Voice Settings Grid */
+.voice-settings .form-control {
+    transition: all 0.3s ease;
+}
+
+.voice-settings .form-control:focus {
+    border-color: #0dcaf0;
+    box-shadow: 0 0 0 0.2rem rgba(13, 202, 240, 0.25);
+}
+
+/* Loading State for Voiceover */
+.voiceover-loading {
+    position: relative;
+    overflow: hidden;
+}
+
+.voiceover-loading::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(13, 202, 240, 0.2), transparent);
+    animation: loading-shine 1.5s infinite;
+}
+
+@keyframes loading-shine {
+    0% { left: -100%; }
+    100% { left: 100%; }
 }

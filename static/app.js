@@ -12,6 +12,7 @@ class PDFApp {
         this.setupEventListeners();
         this.setupSocketHandlers();
         this.setupFileUpload();
+        this.setupStandaloneVoiceover();
     }
 
     setupModeSelection() {
@@ -454,6 +455,200 @@ class PDFApp {
         if (generateBtn) {
             generateBtn.onclick = () => this.generateSummary();
         }
+
+        // Set up the generate voiceover button
+        const voiceoverBtn = document.getElementById('generate-voiceover-btn');
+        if (voiceoverBtn) {
+            voiceoverBtn.onclick = () => this.showVoiceoverSection();
+        }
+    }
+
+    showVoiceoverSection() {
+        const voiceoverSection = document.getElementById('voiceover-section');
+        if (voiceoverSection) {
+            voiceoverSection.style.display = 'block';
+        }
+
+        // Setup voiceover mode selection
+        this.setupVoiceoverModeSelection();
+        
+        // Set up the start voiceover button
+        const startVoiceoverBtn = document.getElementById('start-voiceover-btn');
+        if (startVoiceoverBtn) {
+            startVoiceoverBtn.onclick = () => this.generateVoiceover();
+        }
+    }
+
+    setupVoiceoverModeSelection() {
+        const modeRadios = document.querySelectorAll('input[name="voiceover-mode"]');
+        const customTextContainer = document.getElementById('custom-text-container');
+        
+        modeRadios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                if (e.target.value === 'custom') {
+                    customTextContainer.style.display = 'block';
+                } else {
+                    customTextContainer.style.display = 'none';
+                }
+            });
+        });
+    }
+
+    generateVoiceover() {
+        if (!this.sessionId) {
+            this.showError('No session available. Please process a document first.');
+            return;
+        }
+
+        // Get voiceover settings
+        const voiceoverMode = document.querySelector('input[name="voiceover-mode"]:checked').value;
+        const voiceType = document.getElementById('voice-select').value;
+        const speed = parseFloat(document.getElementById('speed-select').value);
+        const format = document.getElementById('format-select').value;
+
+        let textContent = '';
+        
+        if (voiceoverMode === 'summary') {
+            // Use the generated summary text
+            const summaryText = document.getElementById('summary-text');
+            if (!summaryText || !summaryText.textContent.trim()) {
+                this.showError('No summary available. Please generate a summary first.');
+                return;
+            }
+            textContent = summaryText.textContent.trim();
+        } else {
+            // Use custom text
+            const customText = document.getElementById('voiceover-text').value.trim();
+            if (!customText) {
+                this.showError('Please enter text for voiceover generation.');
+                return;
+            }
+            textContent = customText;
+        }
+
+        // Show progress
+        this.showVoiceoverProgress();
+
+        // Disable the button
+        const startBtn = document.getElementById('start-voiceover-btn');
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
+        }
+
+        // Send request to backend
+        fetch(`/generate-voiceover/${this.sessionId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                text: textContent,
+                voice: voiceType,
+                speed: speed,
+                format: format
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            this.hideVoiceoverProgress();
+            
+            if (data.success) {
+                this.showVoiceoverResult(data.file_url, format);
+            } else {
+                this.showError(data.error || 'Failed to generate voiceover');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            this.showError('An error occurred while generating voiceover.');
+            this.hideVoiceoverProgress();
+        })
+        .finally(() => {
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.innerHTML = '<i class="fas fa-play me-2"></i>Generate Voiceover';
+            }
+        });
+    }
+
+    showVoiceoverProgress() {
+        const progressContainer = document.getElementById('voiceover-progress-container');
+        const resultContainer = document.getElementById('voiceover-result');
+        
+        if (progressContainer) {
+            progressContainer.style.display = 'block';
+        }
+        
+        if (resultContainer) {
+            resultContainer.style.display = 'none';
+        }
+
+        // Simulate progress updates
+        this.updateVoiceoverProgress(0, 'Preparing text for voiceover...');
+        
+        setTimeout(() => this.updateVoiceoverProgress(30, 'Generating speech audio...'), 1000);
+        setTimeout(() => this.updateVoiceoverProgress(70, 'Processing audio file...'), 2000);
+        setTimeout(() => this.updateVoiceoverProgress(90, 'Finalizing output...'), 3000);
+    }
+
+    updateVoiceoverProgress(progress, message) {
+        const progressBar = document.getElementById('voiceover-progress');
+        const progressMessage = document.getElementById('voiceover-message');
+        const status = document.getElementById('voiceover-status');
+        
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`;
+        }
+        
+        if (progressMessage) {
+            progressMessage.textContent = message;
+        }
+        
+        if (status) {
+            status.textContent = progress < 100 ? 'Processing' : 'Complete';
+            status.className = progress < 100 ? 'badge bg-info' : 'badge bg-success';
+        }
+    }
+
+    hideVoiceoverProgress() {
+        const progressContainer = document.getElementById('voiceover-progress-container');
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+    }
+
+    showVoiceoverResult(fileUrl, format) {
+        const resultContainer = document.getElementById('voiceover-result');
+        const audioElement = document.getElementById('voiceover-audio');
+        const videoElement = document.getElementById('voiceover-video');
+        const downloadBtn = document.getElementById('download-voiceover-btn');
+        
+        if (resultContainer) {
+            resultContainer.style.display = 'block';
+        }
+
+        // Show appropriate media player based on format
+        if (format === 'mp4') {
+            // Show video player
+            audioElement.style.display = 'none';
+            videoElement.style.display = 'block';
+            videoElement.src = fileUrl;
+        } else {
+            // Show audio player
+            videoElement.style.display = 'none';
+            audioElement.style.display = 'block';
+            audioElement.src = fileUrl;
+        }
+
+        // Set up download button
+        if (downloadBtn) {
+            downloadBtn.onclick = () => {
+                window.location.href = fileUrl;
+            };
+        }
+
+        this.updateVoiceoverProgress(100, 'Voiceover generation complete!');
     }
 
     generateSummary() {
@@ -605,6 +800,209 @@ class PDFApp {
         const sizes = ['Bytes', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    setupStandaloneVoiceover() {
+        // Show standalone voiceover panel button
+        const showBtn = document.getElementById('show-standalone-voiceover-btn');
+        if (showBtn) {
+            showBtn.addEventListener('click', () => {
+                this.toggleStandaloneVoiceoverPanel();
+            });
+        }
+
+        // Generate standalone voiceover button
+        const generateBtn = document.getElementById('generate-standalone-voiceover-btn');
+        if (generateBtn) {
+            generateBtn.addEventListener('click', () => {
+                this.generateStandaloneVoiceover();
+            });
+        }
+    }
+
+    toggleStandaloneVoiceoverPanel() {
+        const panel = document.getElementById('standalone-voiceover-panel');
+        const btn = document.getElementById('show-standalone-voiceover-btn');
+        
+        if (panel && btn) {
+            if (panel.style.display === 'none' || panel.style.display === '') {
+                panel.style.display = 'block';
+                btn.innerHTML = '<i class="fas fa-times me-2"></i>Hide Panel';
+                btn.classList.remove('btn-info');
+                btn.classList.add('btn-secondary');
+            } else {
+                panel.style.display = 'none';
+                btn.innerHTML = '<i class="fas fa-play me-2"></i>Create Voiceover Now';
+                btn.classList.remove('btn-secondary');
+                btn.classList.add('btn-info');
+                
+                // Reset the form
+                this.resetStandaloneVoiceoverForm();
+            }
+        }
+    }
+
+    resetStandaloneVoiceoverForm() {
+        // Clear text input
+        const textArea = document.getElementById('standalone-voiceover-text');
+        if (textArea) {
+            textArea.value = '';
+        }
+
+        // Reset voice settings to defaults
+        const voiceSelect = document.getElementById('standalone-voice-select');
+        const speedSelect = document.getElementById('standalone-speed-select');
+        const formatSelect = document.getElementById('standalone-format-select');
+        
+        if (voiceSelect) voiceSelect.value = 'nova';
+        if (speedSelect) speedSelect.value = '1.0';
+        if (formatSelect) formatSelect.value = 'mp3';
+
+        // Hide progress and result sections
+        const progressDiv = document.getElementById('standalone-voiceover-progress');
+        const resultDiv = document.getElementById('standalone-voiceover-result');
+        
+        if (progressDiv) progressDiv.style.display = 'none';
+        if (resultDiv) resultDiv.style.display = 'none';
+    }
+
+    generateStandaloneVoiceover() {
+        // Get the text content
+        const textContent = document.getElementById('standalone-voiceover-text').value.trim();
+        
+        if (!textContent) {
+            this.showError('Please enter text for voiceover generation.');
+            return;
+        }
+
+        // Get voice settings
+        const voiceType = document.getElementById('standalone-voice-select').value;
+        const speed = parseFloat(document.getElementById('standalone-speed-select').value);
+        const format = document.getElementById('standalone-format-select').value;
+
+        // Show progress
+        this.showStandaloneVoiceoverProgress();
+
+        // Disable the button
+        const generateBtn = document.getElementById('generate-standalone-voiceover-btn');
+        if (generateBtn) {
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
+        }
+
+        // Send request to backend (using a dummy session ID for standalone)
+        fetch('/generate-voiceover/standalone', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                text: textContent,
+                voice: voiceType,
+                speed: speed,
+                format: format
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            this.hideStandaloneVoiceoverProgress();
+            
+            if (data.success) {
+                this.showStandaloneVoiceoverResult(data.file_url, format);
+            } else {
+                this.showError(data.error || 'Failed to generate voiceover');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            this.showError('An error occurred while generating voiceover.');
+            this.hideStandaloneVoiceoverProgress();
+        })
+        .finally(() => {
+            if (generateBtn) {
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<i class="fas fa-magic me-2"></i>Generate AI Voiceover';
+            }
+        });
+    }
+
+    showStandaloneVoiceoverProgress() {
+        const progressContainer = document.getElementById('standalone-voiceover-progress');
+        const resultContainer = document.getElementById('standalone-voiceover-result');
+        
+        if (progressContainer) {
+            progressContainer.style.display = 'block';
+        }
+        
+        if (resultContainer) {
+            resultContainer.style.display = 'none';
+        }
+
+        // Simulate progress updates
+        this.updateStandaloneVoiceoverProgress(0, 'Preparing text for voiceover...');
+        
+        setTimeout(() => this.updateStandaloneVoiceoverProgress(30, 'Generating speech audio...'), 1000);
+        setTimeout(() => this.updateStandaloneVoiceoverProgress(70, 'Processing audio file...'), 2000);
+        setTimeout(() => this.updateStandaloneVoiceoverProgress(90, 'Finalizing output...'), 3000);
+    }
+
+    updateStandaloneVoiceoverProgress(progress, message) {
+        const progressBar = document.getElementById('standalone-voiceover-progress-bar');
+        const progressMessage = document.getElementById('standalone-voiceover-message');
+        const status = document.getElementById('standalone-voiceover-status');
+        
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`;
+        }
+        
+        if (progressMessage) {
+            progressMessage.textContent = message;
+        }
+        
+        if (status) {
+            status.textContent = progress < 100 ? 'Processing' : 'Complete';
+            status.className = progress < 100 ? 'badge bg-info' : 'badge bg-success';
+        }
+    }
+
+    hideStandaloneVoiceoverProgress() {
+        const progressContainer = document.getElementById('standalone-voiceover-progress');
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+    }
+
+    showStandaloneVoiceoverResult(fileUrl, format) {
+        const resultContainer = document.getElementById('standalone-voiceover-result');
+        const audioElement = document.getElementById('standalone-voiceover-audio');
+        const videoElement = document.getElementById('standalone-voiceover-video');
+        const downloadBtn = document.getElementById('download-standalone-voiceover-btn');
+        
+        if (resultContainer) {
+            resultContainer.style.display = 'block';
+        }
+
+        // Show appropriate media player based on format
+        if (format === 'mp4') {
+            // Show video player
+            audioElement.style.display = 'none';
+            videoElement.style.display = 'block';
+            videoElement.src = fileUrl;
+        } else {
+            // Show audio player
+            videoElement.style.display = 'none';
+            audioElement.style.display = 'block';
+            audioElement.src = fileUrl;
+        }
+
+        // Set up download button
+        if (downloadBtn) {
+            downloadBtn.onclick = () => {
+                window.location.href = fileUrl;
+            };
+        }
+
+        this.updateStandaloneVoiceoverProgress(100, 'Voiceover generation complete!');
     }
 }
 

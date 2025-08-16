@@ -89,3 +89,9 @@ coverage.xml
 secret_key.txt
 *.key
 api_keys.txt
+
+# Voiceover files
+voiceovers/
+*.mp3
+*.wav
+*.mp4

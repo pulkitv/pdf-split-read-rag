@@ -6,6 +6,7 @@ from werkzeug.utils import secure_filename
 import threading
 from pdf_processor import PDFProcessor
 from rag_system import RAGSystem
+from voiceover_system import VoiceoverSystem
 from dotenv import load_dotenv
 import json
 
@@ -54,6 +55,7 @@ pdf_processor = PDFProcessor(
 )
 
 rag_system = RAGSystem()
+voiceover_system = VoiceoverSystem()
 
 # Store processing sessions
 processing_sessions = {}
@@ -524,6 +526,122 @@ def summarize_document(session_id):
         return jsonify({'success': True, 'summary': summary})
         
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/generate-voiceover/<session_id>', methods=['POST'])
+def generate_voiceover(session_id):
+    """Generate AI voiceover from text"""
+    # Handle standalone voiceover requests (no session required)
+    if session_id == 'standalone':
+        data = request.get_json()
+        text = data.get('text', '')
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        format = data.get('format', 'mp3')
+        
+        if not text.strip():
+            return jsonify({'error': 'No text provided for voiceover generation'}), 400
+        
+        try:
+            print(f"Generating standalone voiceover")
+            print(f"Text length: {len(text)} characters")
+            print(f"Voice: {voice}, Speed: {speed}, Format: {format}")
+            
+            # Generate voiceover using the voiceover system without session ID
+            result = voiceover_system.generate_speech(
+                text=text,
+                voice=voice,
+                speed=speed,
+                format=format,
+                session_id=None  # No session for standalone
+            )
+            
+            if result['success']:
+                return jsonify({
+                    'success': True,
+                    'file_url': result['file_url'],
+                    'format': result['format'],
+                    'duration': result.get('duration', 0)
+                })
+            else:
+                return jsonify({'error': 'Failed to generate voiceover'}), 500
+                
+        except Exception as e:
+            print(f"Error generating standalone voiceover: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    # Handle session-based voiceover requests (original functionality)
+    if session_id not in processing_sessions:
+        return jsonify({'error': 'Invalid session ID'}), 404
+    
+    data = request.get_json()
+    text = data.get('text', '')
+    voice = data.get('voice', 'nova')
+    speed = float(data.get('speed', 1.0))
+    format = data.get('format', 'mp3')
+    
+    if not text.strip():
+        return jsonify({'error': 'No text provided for voiceover generation'}), 400
+    
+    try:
+        print(f"Generating voiceover for session {session_id}")
+        print(f"Text length: {len(text)} characters")
+        print(f"Voice: {voice}, Speed: {speed}, Format: {format}")
+        
+        # Generate voiceover using the voiceover system
+        result = voiceover_system.generate_speech(
+            text=text,
+            voice=voice,
+            speed=speed,
+            format=format,
+            session_id=session_id
+        )
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'file_url': result['file_url'],
+                'format': result['format'],
+                'duration': result.get('duration', 0)
+            })
+        else:
+            return jsonify({'error': 'Failed to generate voiceover'}), 500
+            
+    except Exception as e:
+        print(f"Error generating voiceover: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/download-voiceover/<filename>')
+def download_voiceover(filename):
+    """Download generated voiceover file"""
+    try:
+        voiceover_folder = voiceover_system.output_folder
+        file_path = os.path.join(voiceover_folder, filename)
+        
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        # Get file info
+        file_info = voiceover_system.get_file_info(filename)
+        if not file_info:
+            return jsonify({'error': 'File information not available'}), 404
+        
+        # Determine mimetype based on format
+        mimetype = 'audio/mpeg'  # Default for MP3
+        if filename.endswith('.wav'):
+            mimetype = 'audio/wav'
+        elif filename.endswith('.mp4'):
+            mimetype = 'video/mp4'
+        
+        return send_file(
+            file_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype=mimetype
+        )
+        
+    except Exception as e:
+        print(f"Error downloading voiceover: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/status/<session_id>')
