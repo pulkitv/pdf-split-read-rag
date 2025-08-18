@@ -96,6 +96,13 @@
                                 </div>
                             </div>
                             
+                            <!-- Add an image upload input for video background -->
+                            <div class="form-group">
+                                <label for="backgroundImageStandalone">Upload Background Image (optional):</label>
+                                <input type="file" id="backgroundImageStandalone" name="backgroundImageStandalone" accept="image/*" class="form-control">
+                                <small class="form-text text-muted">Supported formats: JPG, PNG</small>
+                            </div>
+                            
                             <!-- Generate Button -->
                             <div class="text-center mb-3">
                                 <button class="btn btn-info btn-lg" id="generate-standalone-voiceover-btn">
@@ -144,139 +151,100 @@
                     </div>
                 </div>
 
-                <!-- Mode Selection -->
-                <div class="card shadow-lg mb-4">
-                    <div class="card-header bg-secondary text-white">
-                        <h4 class="mb-0">
-                            <i class="fas fa-cog me-2"></i>
-                            Processing Mode
-                        </h4>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="form-check form-check-custom">
-                                    <input class="form-check-input" type="radio" name="processing-mode" id="ocr-mode" value="ocr" checked>
-                                    <label class="form-check-label" for="ocr-mode">
-                                        <div class="mode-option">
-                                            <i class="fas fa-eye fa-2x text-primary mb-2"></i>
-                                            <h5>OCR Processing</h5>
-                                            <p class="text-muted">For scanned PDFs that need text extraction</p>
-                                        </div>
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="form-check form-check-custom">
-                                    <input class="form-check-input" type="radio" name="processing-mode" id="direct-mode" value="direct">
-                                    <label class="form-check-label" for="direct-mode">
-                                        <div class="mode-option">
-                                            <i class="fas fa-bolt fa-2x text-success mb-2"></i>
-                                            <h5>Direct Upload</h5>
-                                            <p class="text-muted">For text-readable PDFs (faster processing)</p>
-                                        </div>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Upload Section -->
-                <div id="upload-section" class="card shadow-lg mb-4">
+                <!-- Upload and Processing Section -->
+                <div class="card shadow-lg mb-4" id="upload-section">
                     <div class="card-header bg-primary text-white">
                         <h4 class="mb-0">
-                            <i class="fas fa-cloud-upload-alt me-2"></i>
-                            Upload PDF Document
+                            <i class="fas fa-file-upload me-2"></i>
+                            Upload Economic Times PDF
                         </h4>
                     </div>
                     <div class="card-body">
-                        <div class="upload-area" id="upload-area">
-                            <i class="fas fa-file-pdf fa-3x text-muted mb-3"></i>
-                            <h5 id="upload-title">Drop your PDF file here or click to browse</h5>
-                            <p class="text-muted" id="upload-description">Supports PDF files up to 50MB (optimized for 25-30MB Economic Times PDFs)</p>
-                            <input type="file" id="file-input" accept=".pdf" style="position: absolute; left: -9999px; top: -9999px; opacity: 0; width: 1px; height: 1px;">
-                            <button type="button" class="btn btn-primary btn-lg" id="browse-btn">
-                                <i class="fas fa-folder-open me-2"></i>Browse Files
-                            </button>
-                        </div>
-                        <div id="file-info" class="mt-3" style="display: none;">
-                            <div class="alert alert-info">
-                                <i class="fas fa-info-circle me-2"></i>
-                                <strong>Selected file:</strong> <span id="file-name"></span>
-                                <button class="btn btn-success ms-3" id="start-processing">
-                                    <i class="fas fa-play me-2"></i><span id="start-btn-text">Start Processing</span>
-                                </button>
+                        <div class="mb-3">
+                            <label class="form-label"><i class="fas fa-cog me-2"></i>Processing Mode</label>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="processing-mode" id="mode-ocr" value="ocr" checked>
+                                <label class="form-check-label" for="mode-ocr">Perform OCR (for scanned PDFs)</label>
                             </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="processing-mode" id="mode-direct" value="direct">
+                                <label class="form-check-label" for="mode-direct">Direct text extraction (text-readable PDFs)</label>
+                            </div>
+                        </div>
+
+                        <div id="upload-area" class="border rounded p-4 text-center bg-light" style="cursor: pointer;">
+                            <p class="mb-2"><i class="fas fa-cloud-upload-alt fa-2x text-primary"></i></p>
+                            <p class="mb-1">Drag & drop your PDF here, or</p>
+                            <button type="button" class="btn btn-outline-primary" id="browse-btn">Browse Files</button>
+                            <input type="file" id="file-input" accept="application/pdf" style="display:none;" />
+                        </div>
+
+                        <div id="file-info" class="alert alert-secondary mt-3" style="display:none;">
+                            <i class="fas fa-file-pdf me-2"></i>
+                            <strong>Selected:</strong> <span id="file-name"></span>
+                        </div>
+
+                        <div class="text-end mt-3">
+                            <button class="btn btn-primary" id="start-processing">
+                                <i class="fas fa-play me-2"></i>Start Processing
+                            </button>
                         </div>
                     </div>
                 </div>
 
-                <!-- Processing Section -->
-                <div id="processing-section" class="card shadow-lg mb-4" style="display: none;">
-                    <div class="card-header bg-info text-white">
+                <!-- Processing Progress -->
+                <div class="card shadow-lg mb-4" id="processing-section" style="display:none;">
+                    <div class="card-header bg-warning text-dark">
                         <h4 class="mb-0">
-                            <i class="fas fa-cogs me-2"></i>
-                            Processing Pipeline
+                            <i class="fas fa-tasks me-2"></i>
+                            Processing Document
                         </h4>
                     </div>
                     <div class="card-body">
-                        <!-- Step 1: PDF Splitting -->
-                        <div class="processing-step mb-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-cut me-2"></i>
-                                    Step 1: Splitting PDF into Pages
-                                </h6>
+                        <!-- Splitting -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <strong><i class="fas fa-cut me-2"></i>Split PDF</strong>
                                 <span class="badge bg-secondary" id="splitting-status">Waiting</span>
                             </div>
                             <div class="progress">
-                                <div class="progress-bar" id="splitting-progress" role="progressbar" style="width: 0%"></div>
+                                <div class="progress-bar" id="splitting-progress" style="width:0%"></div>
                             </div>
                             <small class="text-muted" id="splitting-message">Waiting to start...</small>
                         </div>
 
-                        <!-- Step 2: OCR Processing -->
-                        <div class="processing-step mb-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-eye me-2"></i>
-                                    Step 2: OCR Text Recognition
-                                </h6>
+                        <!-- OCR -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <strong><i class="fas fa-eye me-2"></i>OCR</strong>
                                 <span class="badge bg-secondary" id="ocr-status">Waiting</span>
                             </div>
                             <div class="progress">
-                                <div class="progress-bar" id="ocr-progress" role="progressbar" style="width: 0%"></div>
+                                <div class="progress-bar bg-info" id="ocr-progress" style="width:0%"></div>
                             </div>
                             <small class="text-muted" id="ocr-message">Waiting to start...</small>
                         </div>
 
-                        <!-- Step 3: PDF Merging -->
-                        <div class="processing-step mb-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-compress me-2"></i>
-                                    Step 3: Merging Processed Pages
-                                </h6>
+                        <!-- Merging -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <strong><i class="fas fa-compress-arrows-alt me-2"></i>Merge PDF</strong>
                                 <span class="badge bg-secondary" id="merging-status">Waiting</span>
                             </div>
                             <div class="progress">
-                                <div class="progress-bar" id="merging-progress" role="progressbar" style="width: 0%"></div>
+                                <div class="progress-bar bg-success" id="merging-progress" style="width:0%"></div>
                             </div>
                             <small class="text-muted" id="merging-message">Waiting to start...</small>
                         </div>
 
-                        <!-- Step 4: Text Extraction -->
-                        <div class="processing-step mb-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-database me-2"></i>
-                                    Step 4: Creating Vector Database
-                                </h6>
+                        <!-- Text Extraction -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <strong><i class="fas fa-file-alt me-2"></i>Text Extraction & Vector DB</strong>
                                 <span class="badge bg-secondary" id="text-extraction-status">Waiting</span>
                             </div>
                             <div class="progress">
-                                <div class="progress-bar" id="text-extraction-progress" role="progressbar" style="width: 0%"></div>
+                                <div class="progress-bar bg-warning" id="text-extraction-progress" style="width:0%"></div>
                             </div>
                             <small class="text-muted" id="text-extraction-message">Waiting to start...</small>
                         </div>
@@ -284,144 +252,91 @@
                 </div>
 
                 <!-- Results Section -->
-                <div id="results-section" class="card shadow-lg mb-4" style="display: none;">
+                <div class="card shadow-lg mb-4" id="results-section" style="display:none;">
                     <div class="card-header bg-success text-white">
-                        <h4 class="mb-0">
-                            <i class="fas fa-check-circle me-2"></i>
-                            Processing Complete
-                        </h4>
+                        <h4 class="mb-0"><i class="fas fa-check-circle me-2"></i>Results</h4>
                     </div>
                     <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="text-center">
-                                    <h5><i class="fas fa-download me-2"></i>Download Processed PDF</h5>
-                                    <button class="btn btn-success btn-lg" id="download-btn">
-                                        <i class="fas fa-file-pdf me-2"></i>Download PDF
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="text-center">
-                                    <h5><i class="fas fa-magic me-2"></i>Generate AI Summary</h5>
-                                    <button class="btn btn-primary btn-lg" id="summarize-btn">
-                                        <i class="fas fa-robot me-2"></i>Create Summary
-                                    </button>
-                                </div>
-                            </div>
+                        <p class="mb-3 text-muted">Your document is ready. You can download it, then generate an AI summary or create a voiceover.</p>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button class="btn btn-success" id="download-btn">
+                                <i class="fas fa-download me-2"></i>Download Processed PDF
+                            </button>
+                            <button class="btn btn-primary" id="summarize-btn">
+                                <i class="fas fa-lightbulb me-2"></i>Summarize with AI
+                            </button>
+                            <button class="btn btn-info" id="generate-voiceover-btn">
+                                <i class="fas fa-microphone me-2"></i>Create Voiceover
+                            </button>
+                            <button class="btn btn-secondary" id="search-btn">
+                                <i class="fas fa-search me-2"></i>Search Document
+                            </button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Summary Section -->
-                <div id="summary-section" class="card shadow-lg mb-4" style="display: none;">
-                    <div class="card-header bg-warning text-dark">
-                        <h4 class="mb-0">
-                            <i class="fas fa-brain me-2"></i>
-                            AI Summary Generation
-                        </h4>
+                <div class="card shadow-lg mb-4" id="summary-section" style="display:none;">
+                    <div class="card-header bg-secondary text-white">
+                        <h4 class="mb-0"><i class="fas fa-align-left me-2"></i>AI Summary</h4>
                     </div>
                     <div class="card-body">
-                        <!-- Custom Prompt -->
                         <div class="mb-3">
-                            <label for="custom-prompt" class="form-label">
-                                <i class="fas fa-edit me-2"></i>Custom Prompt (Optional)
-                            </label>
-                            <textarea class="form-control" id="custom-prompt" rows="3" 
-                                placeholder="Enter custom instructions for the AI summary (leave empty for default economic analysis)..."></textarea>
+                            <label for="custom-prompt" class="form-label"><i class="fas fa-sliders-h me-2"></i>Optional: Custom Prompt</label>
+                            <textarea id="custom-prompt" class="form-control" rows="3" placeholder="e.g., Summarize key market movements and top headlines in bullet points..."></textarea>
                         </div>
-                        
-                        <!-- Generate Button -->
-                        <div class="text-center mb-3">
-                            <button class="btn btn-warning btn-lg" id="generate-summary-btn">
-                                <i class="fas fa-magic me-2"></i>Generate Summary
-                            </button>
-                        </div>
+                        <button class="btn btn-primary mb-3" id="generate-summary-btn">
+                            <i class="fas fa-robot me-2"></i>Generate Summary
+                        </button>
 
-                        <!-- Summary Progress -->
-                        <div id="summary-progress-container" style="display: none;">
+                        <div id="summary-progress-container" style="display:none;">
                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-robot me-2"></i>
-                                    Generating AI Summary...
-                                </h6>
-                                <span class="badge bg-warning" id="summarization-status">Processing</span>
+                                <h6 class="mb-0"><i class="fas fa-spinner me-2"></i>Summarization Progress</h6>
+                                <span class="badge bg-primary" id="summarization-status">Processing</span>
                             </div>
-                            <div class="progress">
-                                <div class="progress-bar bg-warning" id="summarization-progress" role="progressbar" style="width: 0%"></div>
+                            <div class="progress mb-2">
+                                <div class="progress-bar" id="summarization-progress" style="width:0%"></div>
                             </div>
-                            <small class="text-muted" id="summarization-message">Analyzing document content...</small>
+                            <small class="text-muted" id="summarization-message">Starting summarization...</small>
                         </div>
 
-                        <!-- Summary Result -->
-                        <div id="summary-result" style="display: none;">
-                            <hr>
-                            <h5><i class="fas fa-file-alt me-2"></i>Document Summary</h5>
-                            <div class="summary-content" id="summary-text"></div>
-                            
-                            <!-- Generate Voiceover Button -->
-                            <div class="text-center mt-4">
-                                <button class="btn btn-info btn-lg" id="generate-voiceover-btn">
-                                    <i class="fas fa-microphone me-2"></i>Generate AI Voiceover
-                                </button>
-                            </div>
+                        <div id="summary-result" style="display:none;">
+                            <hr class="my-4">
+                            <h5><i class="fas fa-file-alt me-2"></i>Summary</h5>
+                            <div id="summary-text" class="bg-light p-3 rounded" style="white-space:pre-wrap"></div>
                         </div>
                     </div>
                 </div>
 
-                <!-- AI Voiceover Section -->
-                <div id="voiceover-section" class="card shadow-lg mb-4" style="display: none;">
-                    <div class="card-header bg-info text-white">
-                        <h4 class="mb-0">
-                            <i class="fas fa-microphone me-2"></i>
-                            AI Voiceover Generation
-                        </h4>
+                <!-- Voiceover Section -->
+                <div class="card shadow-lg mb-4" id="voiceover-section" style="display:none;">
+                    <div class="card-header bg-dark text-white">
+                        <h4 class="mb-0"><i class="fas fa-microphone me-2"></i>AI Voiceover</h4>
                     </div>
                     <div class="card-body">
-                        <!-- Voiceover Mode Selection -->
-                        <div class="row mb-4">
-                            <div class="col-md-6">
-                                <div class="form-check form-check-custom">
-                                    <input class="form-check-input" type="radio" name="voiceover-mode" id="summary-voice-mode" value="summary" checked>
-                                    <label class="form-check-label" for="summary-voice-mode">
-                                        <div class="mode-option">
-                                            <i class="fas fa-file-audio fa-2x text-info mb-2"></i>
-                                            <h5>Summary to Voice</h5>
-                                            <p class="text-muted">Convert the AI-generated summary to voiceover</p>
-                                        </div>
-                                    </label>
-                                </div>
+                        <!-- Source toggle -->
+                        <div class="mb-3">
+                            <label class="form-label"><i class="fas fa-exchange-alt me-2"></i>Voiceover Source</label>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="voiceover-source" id="summary-voice-mode" value="summary" checked>
+                                <label class="form-check-label" for="summary-voice-mode">Use generated summary</label>
                             </div>
-                            <div class="col-md-6">
-                                <div class="form-check form-check-custom">
-                                    <input class="form-check-input" type="radio" name="voiceover-mode" id="custom-voice-mode" value="custom">
-                                    <label class="form-check-label" for="custom-voice-mode">
-                                        <div class="mode-option">
-                                            <i class="fas fa-keyboard fa-2x text-success mb-2"></i>
-                                            <h5>Custom Text to Voice</h5>
-                                            <p class="text-muted">Enter custom text for voiceover generation</p>
-                                        </div>
-                                    </label>
-                                </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="voiceover-source" id="custom-voice-mode" value="custom">
+                                <label class="form-check-label" for="custom-voice-mode">Provide custom text</label>
                             </div>
                         </div>
 
-                        <!-- Custom Text Input (hidden by default) -->
-                        <div id="custom-text-container" class="mb-3" style="display: none;">
-                            <label for="voiceover-text" class="form-label">
-                                <i class="fas fa-pen me-2"></i>Custom Text for Voiceover
-                            </label>
-                            <textarea class="form-control" id="voiceover-text" rows="6" 
-                                placeholder="Enter the text you want to convert to voiceover..."></textarea>
+                        <div id="custom-text-container" style="display:none;" class="mb-3">
+                            <label for="voiceover-text" class="form-label"><i class="fas fa-pen me-2"></i>Custom Text</label>
+                            <textarea id="voiceover-text" class="form-control" rows="5" placeholder="Paste or write the text you want to convert to audio..."></textarea>
                         </div>
 
-                        <!-- Voice Settings -->
-                        <div class="row mb-4">
+                        <!-- Settings -->
+                        <div class="row g-3 mb-3">
                             <div class="col-md-4">
-                                <label for="voice-select" class="form-label">
-                                    <i class="fas fa-user-alt me-2"></i>Voice Type
-                                </label>
-                                <select class="form-control" id="voice-select">
+                                <label for="voice-select" class="form-label"><i class="fas fa-user-alt me-2"></i>Voice</label>
+                                <select id="voice-select" class="form-control">
                                     <option value="alloy">Alloy (Neutral)</option>
                                     <option value="echo">Echo (Deep)</option>
                                     <option value="fable">Fable (Expressive)</option>
@@ -431,10 +346,8 @@
                                 </select>
                             </div>
                             <div class="col-md-4">
-                                <label for="speed-select" class="form-label">
-                                    <i class="fas fa-tachometer-alt me-2"></i>Speech Speed
-                                </label>
-                                <select class="form-control" id="speed-select">
+                                <label for="speed-select" class="form-label"><i class="fas fa-tachometer-alt me-2"></i>Speed</label>
+                                <select id="speed-select" class="form-control">
                                     <option value="0.7">Slow (0.7x)</option>
                                     <option value="1.0" selected>Normal (1.0x)</option>
                                     <option value="1.2">Fast (1.2x)</option>
@@ -442,76 +355,101 @@
                                 </select>
                             </div>
                             <div class="col-md-4">
-                                <label for="format-select" class="form-label">
-                                    <i class="fas fa-file-audio me-2"></i>Output Format
-                                </label>
-                                <select class="form-control" id="format-select">
+                                <label for="format-select" class="form-label"><i class="fas fa-file-audio me-2"></i>Output</label>
+                                <select id="format-select" class="form-control">
                                     <option value="mp3" selected>MP3 Audio</option>
                                     <option value="wav">WAV Audio</option>
                                     <option value="mp4">MP4 Video</option>
                                 </select>
                             </div>
                         </div>
-                        
-                        <!-- Generate Voiceover Button -->
-                        <div class="text-center mb-3">
-                            <button class="btn btn-info btn-lg" id="start-voiceover-btn">
-                                <i class="fas fa-play me-2"></i>Generate Voiceover
-                            </button>
+
+                        <!-- Background image for MP4 -->
+                        <div class="mb-3">
+                            <label for="backgroundImageMain" class="form-label"><i class="fas fa-image me-2"></i>Background Image (for MP4, optional)</label>
+                            <input type="file" id="backgroundImageMain" accept="image/*" class="form-control" />
+                            <small class="text-muted">If set and format is MP4, a simple video with this image will be generated.</small>
                         </div>
 
-                        <!-- Voiceover Progress -->
-                        <div id="voiceover-progress-container" style="display: none;">
+                        <button class="btn btn-dark mb-3" id="start-voiceover-btn"><i class="fas fa-play me-2"></i>Generate Voiceover</button>
+
+                        <div id="voiceover-progress-container" style="display:none;">
                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-microphone me-2"></i>
-                                    Generating AI Voiceover...
-                                </h6>
-                                <span class="badge bg-info" id="voiceover-status">Processing</span>
+                                <h6 class="mb-0"><i class="fas fa-volume-up me-2"></i>Voiceover Progress</h6>
+                                <span class="badge bg-dark" id="voiceover-status">Processing</span>
                             </div>
-                            <div class="progress">
-                                <div class="progress-bar bg-info" id="voiceover-progress" role="progressbar" style="width: 0%"></div>
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-dark" id="voiceover-progress" style="width:0%"></div>
                             </div>
-                            <small class="text-muted" id="voiceover-message">Preparing audio generation...</small>
+                            <small class="text-muted" id="voiceover-message">Generating audio...</small>
                         </div>
 
-                        <!-- Voiceover Result -->
-                        <div id="voiceover-result" style="display: none;">
-                            <hr>
-                            <h5><i class="fas fa-headphones me-2"></i>Generated Voiceover</h5>
-                            <div class="voiceover-player bg-light p-4 rounded">
-                                <div class="row align-items-center">
-                                    <div class="col-md-8">
-                                        <audio id="voiceover-audio" controls class="w-100" style="display: none;">
-                                            Your browser does not support the audio element.
-                                        </audio>
-                                        <video id="voiceover-video" controls class="w-100" style="display: none;">
-                                            Your browser does not support the video element.
-                                        </video>
-                                    </div>
-                                    <div class="col-md-4 text-center">
-                                        <button class="btn btn-success" id="download-voiceover-btn">
-                                            <i class="fas fa-download me-2"></i>Download
-                                        </button>
-                                    </div>
+                        <div id="voiceover-result" style="display:none;">
+                            <hr class="my-4">
+                            <h5><i class="fas fa-headphones me-2"></i>Preview</h5>
+                            <div class="voiceover-player bg-light p-3 rounded">
+                                <audio id="voiceover-audio" controls class="w-100" style="display:none;">Your browser does not support audio.</audio>
+                                <video id="voiceover-video" controls class="w-100" style="display:none;">Your browser does not support video.</video>
+                                <div class="text-end mt-2">
+                                    <button class="btn btn-success" id="download-voiceover-btn"><i class="fas fa-download me-2"></i>Download</button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
+                <!-- Document Search Section -->
+                <div class="card shadow-lg mb-4" id="search-section" style="display:none;">
+                    <div class="card-header bg-secondary text-white">
+                        <h4 class="mb-0"><i class="fas fa-search me-2"></i>Semantic Search</h4>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3 align-items-end mb-3">
+                            <div class="col-md-8">
+                                <label for="search-query" class="form-label"><i class="fas fa-question-circle me-2"></i>Search Query</label>
+                                <input type="text" id="search-query" class="form-control" placeholder="e.g., Key market movements in banking sector" />
+                            </div>
+                            <div class="col-md-2">
+                                <label for="search-n" class="form-label"><i class="fas fa-list-ol me-2"></i>Top N</label>
+                                <input type="number" id="search-n" class="form-control" min="1" max="20" value="5" />
+                            </div>
+                            <div class="col-md-2 text-end">
+                                <button class="btn btn-secondary w-100" id="search-run-btn">
+                                    <i class="fas fa-search me-2"></i>Search
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <button class="btn btn-outline-secondary btn-sm" id="load-vector-stats-btn">
+                                <i class="fas fa-chart-bar me-2"></i>Load Vector DB Stats
+                            </button>
+                            <div id="vector-stats" class="text-muted mt-2" style="white-space:pre-wrap"></div>
+                        </div>
+
+                        <div id="search-results-container" style="display:none;">
+                            <hr class="my-3">
+                            <h6 class="mb-3"><i class="fas fa-list me-2"></i>Top Results</h6>
+                            <div id="search-results" class="list-group"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Error Section -->
-                <div id="error-section" class="alert alert-danger" style="display: none;">
-                    <h5><i class="fas fa-exclamation-triangle me-2"></i>Error</h5>
-                    <p id="error-message"></p>
+                <div class="alert alert-danger d-flex align-items-start d-none" id="error-section" hidden style="display:none;">
+                    <i class="fas fa-exclamation-triangle me-2 mt-1"></i>
+                    <div>
+                        <strong>Error:</strong>
+                        <span id="error-message"></span>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Scripts -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

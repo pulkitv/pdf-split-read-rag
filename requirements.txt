@@ -1,3 +1,8 @@
+# Removed unnecessary dependencies
+# Removed 'json' and 'uuid' as they are built-in modules in Python
+# Updated for Python 3.13 compatibility and modern build tooling
+
+# Web
 Flask==2.3.3
 Flask-SocketIO==5.3.6
 Werkzeug==2.3.7
@@ -5,25 +10,34 @@ python-socketio==5.8.0
 python-engineio==4.7.1
 
 # PDF Processing
-PyPDF2==3.0.1
+# Removed PyPDF2 (use pypdf only)
 pypdf==3.15.2
 pdf2image==1.16.3
 
 # OCR
 pytesseract==0.3.10
-Pillow>=11.0.0
+# Pillow 10.x is widely compatible; previously pinned 11.x may not exist for all platforms
+Pillow==10.4.0
 
 # AI and Machine Learning
 openai==1.3.3
 langchain==0.0.335
 chromadb==0.4.15
-tiktoken>=0.7.0
-httpx<0.28
+# Force a version with macOS wheels to avoid building from source
+chroma-hnswlib==0.7.3
+# Use a version with broad wheel availability on macOS to avoid Rust build
+tiktoken==0.5.2
+# Pin httpx to a version compatible with OpenAI 1.3.x (supports `proxies`)
+httpx==0.27.2
 
 # Scientific Computing
+# numpy 1.x is required by langchain 0.0.335
 numpy==1.26.4
 
 # Environment and Configuration
 python-dotenv==1.0.0
 
-# Other utilities
+# Build tools to avoid setuptools/pkg_resources ImpImporter issues on Python 3.13
+setuptools>=70.0.0
+wheel>=0.43.0
+build>=1.2.1

@@ -1,1012 +1,558 @@
-// JavaScript for Newspaper Summary App
-class PDFApp {
-    constructor() {
-        this.socket = io();
-        this.currentMode = 'ocr'; // Default mode based on HTML
-        this.selectedFile = null;
-        this.init();
-    }
-
-    init() {
-        this.setupModeSelection();
-        this.setupEventListeners();
-        this.setupSocketHandlers();
-        this.setupFileUpload();
-        this.setupStandaloneVoiceover();
-    }
-
-    setupModeSelection() {
-        const modeRadios = document.querySelectorAll('input[name="processing-mode"]');
-        
-        modeRadios.forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                this.currentMode = e.target.value;
-                this.updateUploadDescription();
-                this.resetUI();
-            });
-        });
-    }
-
-    setupEventListeners() {
-        // Process button
-        const startBtn = document.getElementById('start-processing');
-        if (startBtn) {
-            startBtn.addEventListener('click', () => {
-                this.startProcessing();
-            });
-        }
-    }
-
-    setupFileUpload() {
-        const uploadArea = document.getElementById('upload-area');
-        const fileInput = document.getElementById('file-input');
-        const browseBtn = document.getElementById('browse-btn');
-
-        // Browse button click handler
-        if (browseBtn && fileInput) {
-            browseBtn.addEventListener('click', (e) => {
-                e.stopPropagation(); // Prevent event bubbling
-                fileInput.click();
-            });
-        }
-
-        // File input change handler
-        if (fileInput) {
-            fileInput.addEventListener('change', (e) => {
-                this.handleFileSelect(e);
-            });
-        }
-
-        // Drag and drop handlers
-        if (uploadArea) {
-            // Only allow upload area click if no file is selected
-            uploadArea.addEventListener('click', (e) => {
-                // Don't trigger if clicking on the browse button
-                if (e.target.id === 'browse-btn' || e.target.closest('#browse-btn')) {
-                    return;
-                }
-                
-                // Only allow click to open file dialog if no file is currently selected
-                if (!this.selectedFile && fileInput) {
-                    fileInput.click();
-                }
-            });
-
-            uploadArea.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                uploadArea.classList.add('drag-over');
-            });
-
-            uploadArea.addEventListener('dragleave', (e) => {
-                e.preventDefault();
-                uploadArea.classList.remove('drag-over');
-            });
-
-            uploadArea.addEventListener('drop', (e) => {
-                e.preventDefault();
-                uploadArea.classList.remove('drag-over');
-                
-                const files = e.dataTransfer.files;
-                if (files.length > 0) {
-                    this.handleFileSelection(files[0]);
-                }
-            });
-        }
-    }
-
-    setupSocketHandlers() {
-        // Handle progress updates from the backend
-        this.socket.on('progress_update', (data) => {
-            console.log('Progress update received:', data);
-            this.updateProgress(data);
-        });
-
-        // Handle processing errors
-        this.socket.on('processing_error', (data) => {
-            console.log('Processing error received:', data);
-            this.showError(data.error || 'An error occurred during processing');
-            this.resetProcessingButton();
-        });
-
-        // Handle processing completion
-        this.socket.on('processing_complete', (data) => {
-            console.log('Processing complete received:', data);
-            this.handleProcessingComplete(data);
-        });
-
-        // Handle summary completion
-        this.socket.on('summary_complete', (data) => {
-            console.log('Summary complete received:', data);
-            this.handleSummaryComplete(data);
-        });
-
-        // Handle session joined confirmation
-        this.socket.on('session_joined', (data) => {
-            console.log('Joined session room:', data.session_id);
-        });
-    }
-
-    handleFileSelect(e) {
-        const file = e.target.files[0];
-        if (file) {
-            this.handleFileSelection(file);
-        }
-    }
-
-    handleFileSelection(file) {
-        // Validate file type
-        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-            this.showError('Please select a PDF file.');
-            return;
-        }
-
-        // Validate file size (50MB limit)
-        const maxSize = 50 * 1024 * 1024; // 50MB in bytes
-        if (file.size > maxSize) {
-            this.showError('File size must be less than 50MB.');
-            return;
-        }
-
-        this.selectedFile = file;
-        this.showFileInfo(file);
-    }
-
-    showFileInfo(file) {
-        // Show the file info section
-        const fileInfoDiv = document.getElementById('file-info');
-        const fileNameSpan = document.getElementById('file-name');
-        const startBtn = document.getElementById('start-processing');
-        
-        if (fileInfoDiv) {
-            fileInfoDiv.style.display = 'block';
-        }
-        
-        if (fileNameSpan) {
-            fileNameSpan.textContent = `${file.name} (${this.formatFileSize(file.size)})`;
-        }
-        
-        if (startBtn) {
-            startBtn.style.display = 'inline-block';
-            startBtn.disabled = false;
-        }
-
-        // Hide the upload area browse button since file is selected
-        const browseBtn = document.getElementById('browse-btn');
-        if (browseBtn) {
-            browseBtn.textContent = 'Change File';
-        }
-
-        // Clear any previous errors
-        this.clearError();
-    }
-
-    updateUploadDescription() {
-        const uploadDescription = document.getElementById('upload-description');
-        const startBtnText = document.getElementById('start-btn-text');
-        
-        if (uploadDescription) {
-            switch (this.currentMode) {
-                case 'ocr':
-                    uploadDescription.textContent = 'For scanned PDFs that need OCR text extraction';
-                    break;
-                case 'direct':
-                    uploadDescription.textContent = 'For text-readable PDFs (faster processing - direct to AI summary)';
-                    break;
-            }
-        }
-
-        if (startBtnText) {
-            startBtnText.textContent = 'Start Processing';
-        }
-    }
-
-    startProcessing() {
-        if (!this.selectedFile) {
-            this.showError('Please select a PDF file first.');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('file', this.selectedFile);
-        formData.append('mode', this.currentMode);
-
-        // Show progress section
-        this.showProgressSection();
-        
-        // Disable start button
-        const startBtn = document.getElementById('start-processing');
-        if (startBtn) {
-            startBtn.disabled = true;
-            startBtn.textContent = 'Processing...';
-        }
-
-        // Send file for processing
-        fetch('/upload', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                this.sessionId = data.session_id;
-                this.updateProgress({ step: 'upload', progress: 100, message: 'File uploaded successfully' });
-                
-                // Join the session room for real-time updates
-                this.socket.emit('join_session', { session_id: this.sessionId });
-                
-                // Now start the actual processing pipeline
-                return fetch(`/process/${this.sessionId}`, {
-                    method: 'GET'
-                });
-            } else {
-                throw new Error(data.error || 'Failed to upload file');
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                console.log('Processing pipeline started successfully');
-                // Processing updates will come through WebSocket
-            } else {
-                throw new Error(data.message || 'Failed to start processing');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            this.showError(error.message || 'An error occurred while processing the file.');
-            this.resetProcessingButton();
-        });
-    }
-
-    showProgressSection() {
-        const processingSection = document.getElementById('processing-section');
-        const resultsSection = document.getElementById('results-section');
-        
-        if (processingSection) {
-            processingSection.style.display = 'block';
-        }
-        
-        if (resultsSection) {
-            resultsSection.style.display = 'none';
-        }
-
-        // Reset all progress indicators and hide unnecessary steps for direct mode
-        this.resetProgressIndicators();
-        this.updateProgressVisibility();
-    }
-
-    updateProgressVisibility() {
-        // Hide unnecessary steps for direct upload mode
-        if (this.currentMode === 'direct') {
-            // Hide OCR-related steps for direct upload
-            const stepsToHide = ['splitting', 'ocr', 'merging'];
-            stepsToHide.forEach(step => {
-                const stepElement = document.querySelector(`#${step}-status`).closest('.processing-step');
-                if (stepElement) {
-                    stepElement.style.display = 'none';
-                }
-            });
-            
-            // Show only text extraction step
-            const textExtractionStep = document.querySelector('#text-extraction-status').closest('.processing-step');
-            if (textExtractionStep) {
-                textExtractionStep.style.display = 'block';
-                // Update the step title for direct mode
-                const stepTitle = textExtractionStep.querySelector('h6');
-                if (stepTitle) {
-                    stepTitle.innerHTML = '<i class="fas fa-database me-2"></i>Step 1: Extracting Text & Creating Vector Database';
-                }
-            }
-        } else {
-            // Show all steps for OCR mode
-            const allSteps = ['splitting', 'ocr', 'merging', 'text-extraction'];
-            allSteps.forEach(step => {
-                const stepElement = document.querySelector(`#${step}-status`).closest('.processing-step');
-                if (stepElement) {
-                    stepElement.style.display = 'block';
-                }
-            });
-            
-            // Reset text extraction title for OCR mode
-            const textExtractionStep = document.querySelector('#text-extraction-status').closest('.processing-step');
-            if (textExtractionStep) {
-                const stepTitle = textExtractionStep.querySelector('h6');
-                if (stepTitle) {
-                    stepTitle.innerHTML = '<i class="fas fa-database me-2"></i>Step 4: Creating Vector Database';
-                }
-            }
-        }
-    }
-
-    resetProgressIndicators() {
-        // Reset all step statuses to waiting
-        const steps = ['splitting', 'ocr', 'merging', 'text-extraction'];
-        steps.forEach(step => {
-            const status = document.getElementById(`${step}-status`);
-            const progress = document.getElementById(`${step}-progress`);
-            const message = document.getElementById(`${step}-message`);
-            
-            if (status) {
-                status.textContent = 'Waiting';
-                status.className = 'badge bg-secondary';
-            }
-            if (progress) {
-                progress.style.width = '0%';
-            }
-            if (message) {
-                message.textContent = 'Waiting to start...';
-            }
-        });
-    }
-
-    updateProgress(data) {
-        // Map the step names to match the HTML IDs
-        const stepMapping = {
-            'splitting': 'splitting',
-            'ocr': 'ocr', 
-            'merging': 'merging',
-            'text_extraction': 'text-extraction',
-            'upload': 'splitting' // Map upload to splitting for initial display
-        };
-        
-        const step = stepMapping[data.step] || data.step;
-        
-        if (step && step !== 'complete') {
-            const status = document.getElementById(`${step}-status`);
-            const progress = document.getElementById(`${step}-progress`);
-            const message = document.getElementById(`${step}-message`);
-            
-            if (status) {
-                if (data.progress === 100) {
-                    status.textContent = 'Complete';
-                    status.className = 'badge bg-success';
-                } else {
-                    status.textContent = 'Processing';
-                    status.className = 'badge bg-primary';
-                }
-            }
-            
-            if (progress) {
-                progress.style.width = `${data.progress}%`;
-                progress.className = data.progress === 100 ? 'progress-bar bg-success' : 'progress-bar bg-primary';
-            }
-            
-            if (message) {
-                message.textContent = data.message || `Processing ${step}...`;
-            }
-        }
-    }
-
-    handleProcessingComplete(data) {
-        const resultsSection = document.getElementById('results-section');
-        const downloadBtn = document.getElementById('download-btn');
-        const summaryBtn = document.getElementById('summarize-btn');
-        
-        if (resultsSection) {
-            resultsSection.style.display = 'block';
-        }
-        
-        if (downloadBtn) {
-            downloadBtn.onclick = () => this.downloadProcessedFile(data.session_id);
-        }
-        
-        if (summaryBtn) {
-            summaryBtn.onclick = () => this.showSummarySection();
-        }
-
-        // Mark all steps as complete
-        const steps = ['splitting', 'ocr', 'merging', 'text-extraction'];
-        steps.forEach(step => {
-            const status = document.getElementById(`${step}-status`);
-            const progress = document.getElementById(`${step}-progress`);
-            const message = document.getElementById(`${step}-message`);
-            
-            if (status) {
-                status.textContent = 'Complete';
-                status.className = 'badge bg-success';
-            }
-            if (progress) {
-                progress.style.width = '100%';
-                progress.className = 'progress-bar bg-success';
-            }
-            if (message) {
-                message.textContent = 'Completed successfully';
-            }
-        });
-        
-        // Reset start button
-        this.resetProcessingButton();
-    }
-
-    handleSummaryComplete(data) {
-        const progressContainer = document.getElementById('summary-progress-container');
-        const resultContainer = document.getElementById('summary-result');
-        const summaryText = document.getElementById('summary-text');
-        
-        if (progressContainer) {
-            progressContainer.style.display = 'none';
-        }
-        
-        if (data.summary && summaryText) {
-            summaryText.innerHTML = data.summary.replace(/\n/g, '<br>');
-        }
-        
-        if (resultContainer) {
-            resultContainer.style.display = 'block';
-        }
-    }
-
-    resetProcessingButton() {
-        const startBtn = document.getElementById('start-processing');
-        if (startBtn) {
-            startBtn.disabled = false;
-            startBtn.textContent = this.currentMode === 'quick-summary' ? 'Generate Summary' : 'Start Processing';
-        }
-    }
-
-    showSummarySection() {
-        const summarySection = document.getElementById('summary-section');
-        if (summarySection) {
-            summarySection.style.display = 'block';
-        }
-        
-        // Set up the generate summary button
-        const generateBtn = document.getElementById('generate-summary-btn');
-        if (generateBtn) {
-            generateBtn.onclick = () => this.generateSummary();
-        }
-
-        // Set up the generate voiceover button
-        const voiceoverBtn = document.getElementById('generate-voiceover-btn');
-        if (voiceoverBtn) {
-            voiceoverBtn.onclick = () => this.showVoiceoverSection();
-        }
-    }
-
-    showVoiceoverSection() {
-        const voiceoverSection = document.getElementById('voiceover-section');
-        if (voiceoverSection) {
-            voiceoverSection.style.display = 'block';
-        }
-
-        // Setup voiceover mode selection
-        this.setupVoiceoverModeSelection();
-        
-        // Set up the start voiceover button
-        const startVoiceoverBtn = document.getElementById('start-voiceover-btn');
-        if (startVoiceoverBtn) {
-            startVoiceoverBtn.onclick = () => this.generateVoiceover();
-        }
-    }
-
-    setupVoiceoverModeSelection() {
-        const modeRadios = document.querySelectorAll('input[name="voiceover-mode"]');
-        const customTextContainer = document.getElementById('custom-text-container');
-        
-        modeRadios.forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                if (e.target.value === 'custom') {
-                    customTextContainer.style.display = 'block';
-                } else {
-                    customTextContainer.style.display = 'none';
-                }
-            });
-        });
-    }
-
-    generateVoiceover() {
-        if (!this.sessionId) {
-            this.showError('No session available. Please process a document first.');
-            return;
-        }
-
-        // Get voiceover settings
-        const voiceoverMode = document.querySelector('input[name="voiceover-mode"]:checked').value;
-        const voiceType = document.getElementById('voice-select').value;
-        const speed = parseFloat(document.getElementById('speed-select').value);
-        const format = document.getElementById('format-select').value;
-
-        let textContent = '';
-        
-        if (voiceoverMode === 'summary') {
-            // Use the generated summary text
-            const summaryText = document.getElementById('summary-text');
-            if (!summaryText || !summaryText.textContent.trim()) {
-                this.showError('No summary available. Please generate a summary first.');
-                return;
-            }
-            textContent = summaryText.textContent.trim();
-        } else {
-            // Use custom text
-            const customText = document.getElementById('voiceover-text').value.trim();
-            if (!customText) {
-                this.showError('Please enter text for voiceover generation.');
-                return;
-            }
-            textContent = customText;
-        }
-
-        // Show progress
-        this.showVoiceoverProgress();
-
-        // Disable the button
-        const startBtn = document.getElementById('start-voiceover-btn');
-        if (startBtn) {
-            startBtn.disabled = true;
-            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
-        }
-
-        // Send request to backend
-        fetch(`/generate-voiceover/${this.sessionId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                text: textContent,
-                voice: voiceType,
-                speed: speed,
-                format: format
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            this.hideVoiceoverProgress();
-            
-            if (data.success) {
-                this.showVoiceoverResult(data.file_url, format);
-            } else {
-                this.showError(data.error || 'Failed to generate voiceover');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            this.showError('An error occurred while generating voiceover.');
-            this.hideVoiceoverProgress();
-        })
-        .finally(() => {
-            if (startBtn) {
-                startBtn.disabled = false;
-                startBtn.innerHTML = '<i class="fas fa-play me-2"></i>Generate Voiceover';
-            }
-        });
-    }
-
-    showVoiceoverProgress() {
-        const progressContainer = document.getElementById('voiceover-progress-container');
-        const resultContainer = document.getElementById('voiceover-result');
-        
-        if (progressContainer) {
-            progressContainer.style.display = 'block';
-        }
-        
-        if (resultContainer) {
-            resultContainer.style.display = 'none';
-        }
-
-        // Simulate progress updates
-        this.updateVoiceoverProgress(0, 'Preparing text for voiceover...');
-        
-        setTimeout(() => this.updateVoiceoverProgress(30, 'Generating speech audio...'), 1000);
-        setTimeout(() => this.updateVoiceoverProgress(70, 'Processing audio file...'), 2000);
-        setTimeout(() => this.updateVoiceoverProgress(90, 'Finalizing output...'), 3000);
-    }
-
-    updateVoiceoverProgress(progress, message) {
-        const progressBar = document.getElementById('voiceover-progress');
-        const progressMessage = document.getElementById('voiceover-message');
-        const status = document.getElementById('voiceover-status');
-        
-        if (progressBar) {
-            progressBar.style.width = `${progress}%`;
-        }
-        
-        if (progressMessage) {
-            progressMessage.textContent = message;
-        }
-        
-        if (status) {
-            status.textContent = progress < 100 ? 'Processing' : 'Complete';
-            status.className = progress < 100 ? 'badge bg-info' : 'badge bg-success';
-        }
-    }
-
-    hideVoiceoverProgress() {
-        const progressContainer = document.getElementById('voiceover-progress-container');
-        if (progressContainer) {
-            progressContainer.style.display = 'none';
-        }
-    }
-
-    showVoiceoverResult(fileUrl, format) {
-        const resultContainer = document.getElementById('voiceover-result');
-        const audioElement = document.getElementById('voiceover-audio');
-        const videoElement = document.getElementById('voiceover-video');
-        const downloadBtn = document.getElementById('download-voiceover-btn');
-        
-        if (resultContainer) {
-            resultContainer.style.display = 'block';
-        }
-
-        // Show appropriate media player based on format
-        if (format === 'mp4') {
-            // Show video player
-            audioElement.style.display = 'none';
-            videoElement.style.display = 'block';
-            videoElement.src = fileUrl;
-        } else {
-            // Show audio player
-            videoElement.style.display = 'none';
-            audioElement.style.display = 'block';
-            audioElement.src = fileUrl;
-        }
-
-        // Set up download button
-        if (downloadBtn) {
-            downloadBtn.onclick = () => {
-                window.location.href = fileUrl;
-            };
-        }
-
-        this.updateVoiceoverProgress(100, 'Voiceover generation complete!');
-    }
-
-    generateSummary() {
-        if (!this.sessionId) {
-            this.showError('No processed file available. Please process a PDF first.');
-            return;
-        }
-
-        const customPrompt = document.getElementById('custom-prompt').value;
-        const generateBtn = document.getElementById('generate-summary-btn');
-        const progressContainer = document.getElementById('summary-progress-container');
-        const resultContainer = document.getElementById('summary-result');
-        const summaryText = document.getElementById('summary-text');
-        
-        if (generateBtn) {
-            generateBtn.disabled = true;
-            generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
-        }
-        
-        if (progressContainer) {
-            progressContainer.style.display = 'block';
-        }
-        
-        if (resultContainer) {
-            resultContainer.style.display = 'none';
-        }
-
-        fetch(`/summarize/${this.sessionId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                prompt: customPrompt
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (progressContainer) {
-                progressContainer.style.display = 'none';
-            }
-            
-            if (data.success) {
-                if (summaryText) {
-                    summaryText.innerHTML = data.summary.replace(/\n/g, '<br>');
-                }
-                if (resultContainer) {
-                    resultContainer.style.display = 'block';
-                }
-            } else {
-                this.showError(data.error || 'Failed to generate summary');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            this.showError('An error occurred while generating the summary.');
-            if (progressContainer) {
-                progressContainer.style.display = 'none';
-            }
-        })
-        .finally(() => {
-            if (generateBtn) {
-                generateBtn.disabled = false;
-                generateBtn.innerHTML = '<i class="fas fa-magic me-2"></i>Generate Summary';
-            }
-        });
-    }
-
-    downloadProcessedFile(sessionId) {
-        if (sessionId) {
-            window.location.href = `/download/${sessionId}`;
-        }
-    }
-
-    resetUI() {
-        // Clear selected file
-        this.selectedFile = null;
-        this.sessionId = null;
-        
-        // Reset file input
-        const fileInput = document.getElementById('file-input');
-        if (fileInput) {
-            fileInput.value = '';
-        }
-        
-        // Reset upload area text
-        const uploadTitle = document.getElementById('upload-title');
-        const browseBtn = document.getElementById('browse-btn');
-        
-        if (uploadTitle) {
-            uploadTitle.textContent = 'Drop your PDF file here or click to browse';
-        }
-        
-        if (browseBtn) {
-            browseBtn.innerHTML = '<i class="fas fa-folder-open me-2"></i>Browse Files';
-        }
-        
-        // Hide file info section
-        const fileInfoDiv = document.getElementById('file-info');
-        if (fileInfoDiv) {
-            fileInfoDiv.style.display = 'none';
-        }
-        
-        // Hide processing elements
-        const processingSection = document.getElementById('processing-section');
-        const resultsSection = document.getElementById('results-section');
-        const summarySection = document.getElementById('summary-section');
-        
-        if (processingSection) {
-            processingSection.style.display = 'none';
-        }
-        
-        if (resultsSection) {
-            resultsSection.style.display = 'none';
-        }
-        
-        if (summarySection) {
-            summarySection.style.display = 'none';
-        }
-        
-        // Clear any errors
-        this.clearError();
-    }
-
-    showError(message) {
-        const errorSection = document.getElementById('error-section');
-        const errorMessage = document.getElementById('error-message');
-        
-        if (errorSection) {
-            errorSection.style.display = 'block';
-        }
-        
-        if (errorMessage) {
-            errorMessage.textContent = message;
-        }
-    }
-
-    clearError() {
-        const errorSection = document.getElementById('error-section');
-        
-        if (errorSection) {
-            errorSection.style.display = 'none';
-        }
-    }
-
-    formatFileSize(bytes) {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    setupStandaloneVoiceover() {
-        // Show standalone voiceover panel button
-        const showBtn = document.getElementById('show-standalone-voiceover-btn');
-        if (showBtn) {
-            showBtn.addEventListener('click', () => {
-                this.toggleStandaloneVoiceoverPanel();
-            });
-        }
-
-        // Generate standalone voiceover button
-        const generateBtn = document.getElementById('generate-standalone-voiceover-btn');
-        if (generateBtn) {
-            generateBtn.addEventListener('click', () => {
-                this.generateStandaloneVoiceover();
-            });
-        }
-    }
-
-    toggleStandaloneVoiceoverPanel() {
-        const panel = document.getElementById('standalone-voiceover-panel');
-        const btn = document.getElementById('show-standalone-voiceover-btn');
-        
-        if (panel && btn) {
-            if (panel.style.display === 'none' || panel.style.display === '') {
-                panel.style.display = 'block';
-                btn.innerHTML = '<i class="fas fa-times me-2"></i>Hide Panel';
-                btn.classList.remove('btn-info');
-                btn.classList.add('btn-secondary');
-            } else {
-                panel.style.display = 'none';
-                btn.innerHTML = '<i class="fas fa-play me-2"></i>Create Voiceover Now';
-                btn.classList.remove('btn-secondary');
-                btn.classList.add('btn-info');
-                
-                // Reset the form
-                this.resetStandaloneVoiceoverForm();
-            }
-        }
-    }
-
-    resetStandaloneVoiceoverForm() {
-        // Clear text input
-        const textArea = document.getElementById('standalone-voiceover-text');
-        if (textArea) {
-            textArea.value = '';
-        }
-
-        // Reset voice settings to defaults
-        const voiceSelect = document.getElementById('standalone-voice-select');
-        const speedSelect = document.getElementById('standalone-speed-select');
-        const formatSelect = document.getElementById('standalone-format-select');
-        
-        if (voiceSelect) voiceSelect.value = 'nova';
-        if (speedSelect) speedSelect.value = '1.0';
-        if (formatSelect) formatSelect.value = 'mp3';
-
-        // Hide progress and result sections
-        const progressDiv = document.getElementById('standalone-voiceover-progress');
-        const resultDiv = document.getElementById('standalone-voiceover-result');
-        
-        if (progressDiv) progressDiv.style.display = 'none';
-        if (resultDiv) resultDiv.style.display = 'none';
-    }
-
-    generateStandaloneVoiceover() {
-        // Get the text content
-        const textContent = document.getElementById('standalone-voiceover-text').value.trim();
-        
-        if (!textContent) {
-            this.showError('Please enter text for voiceover generation.');
-            return;
-        }
-
-        // Get voice settings
-        const voiceType = document.getElementById('standalone-voice-select').value;
-        const speed = parseFloat(document.getElementById('standalone-speed-select').value);
-        const format = document.getElementById('standalone-format-select').value;
-
-        // Show progress
-        this.showStandaloneVoiceoverProgress();
-
-        // Disable the button
-        const generateBtn = document.getElementById('generate-standalone-voiceover-btn');
-        if (generateBtn) {
-            generateBtn.disabled = true;
-            generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
-        }
-
-        // Send request to backend (using a dummy session ID for standalone)
-        fetch('/generate-voiceover/standalone', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                text: textContent,
-                voice: voiceType,
-                speed: speed,
-                format: format
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            this.hideStandaloneVoiceoverProgress();
-            
-            if (data.success) {
-                this.showStandaloneVoiceoverResult(data.file_url, format);
-            } else {
-                this.showError(data.error || 'Failed to generate voiceover');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            this.showError('An error occurred while generating voiceover.');
-            this.hideStandaloneVoiceoverProgress();
-        })
-        .finally(() => {
-            if (generateBtn) {
-                generateBtn.disabled = false;
-                generateBtn.innerHTML = '<i class="fas fa-magic me-2"></i>Generate AI Voiceover';
-            }
-        });
-    }
-
-    showStandaloneVoiceoverProgress() {
-        const progressContainer = document.getElementById('standalone-voiceover-progress');
-        const resultContainer = document.getElementById('standalone-voiceover-result');
-        
-        if (progressContainer) {
-            progressContainer.style.display = 'block';
-        }
-        
-        if (resultContainer) {
-            resultContainer.style.display = 'none';
-        }
-
-        // Simulate progress updates
-        this.updateStandaloneVoiceoverProgress(0, 'Preparing text for voiceover...');
-        
-        setTimeout(() => this.updateStandaloneVoiceoverProgress(30, 'Generating speech audio...'), 1000);
-        setTimeout(() => this.updateStandaloneVoiceoverProgress(70, 'Processing audio file...'), 2000);
-        setTimeout(() => this.updateStandaloneVoiceoverProgress(90, 'Finalizing output...'), 3000);
-    }
-
-    updateStandaloneVoiceoverProgress(progress, message) {
-        const progressBar = document.getElementById('standalone-voiceover-progress-bar');
-        const progressMessage = document.getElementById('standalone-voiceover-message');
-        const status = document.getElementById('standalone-voiceover-status');
-        
-        if (progressBar) {
-            progressBar.style.width = `${progress}%`;
-        }
-        
-        if (progressMessage) {
-            progressMessage.textContent = message;
-        }
-        
-        if (status) {
-            status.textContent = progress < 100 ? 'Processing' : 'Complete';
-            status.className = progress < 100 ? 'badge bg-info' : 'badge bg-success';
-        }
-    }
-
-    hideStandaloneVoiceoverProgress() {
-        const progressContainer = document.getElementById('standalone-voiceover-progress');
-        if (progressContainer) {
-            progressContainer.style.display = 'none';
-        }
-    }
-
-    showStandaloneVoiceoverResult(fileUrl, format) {
-        const resultContainer = document.getElementById('standalone-voiceover-result');
-        const audioElement = document.getElementById('standalone-voiceover-audio');
-        const videoElement = document.getElementById('standalone-voiceover-video');
-        const downloadBtn = document.getElementById('download-standalone-voiceover-btn');
-        
-        if (resultContainer) {
-            resultContainer.style.display = 'block';
-        }
-
-        // Show appropriate media player based on format
-        if (format === 'mp4') {
-            // Show video player
-            audioElement.style.display = 'none';
-            videoElement.style.display = 'block';
-            videoElement.src = fileUrl;
-        } else {
-            // Show audio player
-            videoElement.style.display = 'none';
-            audioElement.style.display = 'block';
-            audioElement.src = fileUrl;
-        }
-
-        // Set up download button
-        if (downloadBtn) {
-            downloadBtn.onclick = () => {
-                window.location.href = fileUrl;
-            };
-        }
-
-        this.updateStandaloneVoiceoverProgress(100, 'Voiceover generation complete!');
-    }
+// Basic state
+let socket = null;
+let currentSessionId = null;
+let processedDownloadUrl = null;
+let lastVoiceoverUrl = null;
+
+// Helpers
+function $(id) { return document.getElementById(id); }
+function setDisplay(id, show) { const el = $(id); if (!el) return; el.hidden = !show; el.style.display = show ? '' : 'none'; if (show) { el.classList.remove('d-none'); } else { el.classList.add('d-none'); } }
+function setText(id, txt) { const el = $(id); if (el) el.textContent = txt; }
+function setProgress(id, pct) { const el = $(id); if (el) el.style.width = `${Math.max(0, Math.min(100, pct))}%`; }
+function enable(el, on = true) { if (el) el.disabled = !on; }
+
+// UI helpers
+function setBadge(id, text, variant) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `badge bg-${variant}`;
 }
 
-// Initialize the app when DOM is loaded
+function scrollIntoViewIfHidden(id) {
+  const el = $(id);
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const fullyVisible = rect.top >= 0 && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight);
+  if (!fullyVisible) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Single socket initializer with all listeners
+function ensureSocket() {
+  if (socket) return socket;
+  socket = io();
+
+  socket.on('connect', () => {
+    if (currentSessionId) socket.emit('join_session', { session_id: currentSessionId });
+  });
+
+  socket.on('session_joined', () => {
+    // no-op
+  });
+
+  socket.on('progress_update', (data) => {
+    if (!data || data.session_id !== currentSessionId) return;
+    const { step, progress, message } = data;
+
+    if (message) {
+      if (step === 'splitting') setText('splitting-message', message);
+      if (step === 'ocr') setText('ocr-message', message);
+      if (step === 'merging') setText('merging-message', message);
+      if (step === 'text-extraction') setText('text-extraction-message', message);
+      if (step === 'summarization') setText('summarization-message', message);
+    }
+
+    if (typeof progress === 'number') {
+      if (step === 'splitting') {
+        setProgress('splitting-progress', progress);
+        setBadge('splitting-status', progress >= 100 ? 'Complete' : 'In Progress', progress >= 100 ? 'success' : 'warning');
+      }
+      if (step === 'ocr') {
+        setProgress('ocr-progress', progress);
+        setBadge('ocr-status', progress >= 100 ? 'Complete' : 'In Progress', progress >= 100 ? 'success' : 'info');
+      }
+      if (step === 'merging') {
+        setProgress('merging-progress', progress);
+        setBadge('merging-status', progress >= 100 ? 'Complete' : 'In Progress', progress >= 100 ? 'success' : 'success');
+      }
+      if (step === 'text-extraction') {
+        setProgress('text-extraction-progress', progress);
+        setBadge('text-extraction-status', progress >= 100 ? 'Complete' : 'In Progress', progress >= 100 ? 'success' : 'warning');
+      }
+      if (step === 'summarization') {
+        setDisplay('summary-progress-container', true);
+        setProgress('summarization-progress', progress);
+        setBadge('summarization-status', progress >= 100 ? 'Complete' : 'In Progress', progress >= 100 ? 'success' : 'primary');
+      }
+    }
+  });
+
+  socket.on('processing_complete', (data) => {
+    if (!data || data.session_id !== currentSessionId) return;
+    processedDownloadUrl = data.merged_file_url;
+
+    // If direct upload, mark others as skipped
+    if (data.direct_upload_mode) {
+      ['splitting', 'ocr', 'merging'].forEach((k) => {
+        setBadge(`${k}-status`, 'Skipped', 'secondary');
+        setProgress(`${k}-progress`, 100);
+        setText(`${k}-message`, 'Skipped for direct text extraction mode');
+      });
+      setBadge('text-extraction-status', 'Complete', 'success');
+      setProgress('text-extraction-progress', 100);
+    }
+
+    setDisplay('processing-section', false);
+    setDisplay('results-section', true);
+
+    const downloadBtn = $('download-btn');
+    if (downloadBtn) {
+      downloadBtn.onclick = () => {
+        if (processedDownloadUrl) window.open(processedDownloadUrl, '_blank');
+      };
+    }
+  });
+
+  socket.on('processing_error', (data) => {
+    if (!data || (currentSessionId && data.session_id !== currentSessionId)) return;
+    setText('error-message', data.error || 'Unknown error occurred.');
+    setDisplay('error-section', true);
+    setDisplay('processing-section', false);
+  });
+
+  socket.on('summary_complete', (data) => {
+    if (!data || data.session_id !== currentSessionId) return;
+    setDisplay('summary-progress-container', false);
+    setDisplay('summary-result', true);
+    setText('summary-text', data.summary || '');
+    // Reveal voiceover entry if hidden
+    setDisplay('voiceover-section', true);
+  });
+
+  socket.on('summary_error', (data) => {
+    if (!data || data.session_id !== currentSessionId) return;
+    setDisplay('summary-progress-container', false);
+    setDisplay('summary-result', false);
+    setText('error-message', data.error || 'Summarization failed.');
+    setDisplay('error-section', true);
+  });
+
+  return socket;
+}
+
+// Upload interactions
+function initUploadHandlers() {
+  const fileInput = $('file-input');
+  const uploadArea = $('upload-area');
+  const browseBtn = $('browse-btn');
+  const fileName = $('file-name');
+  const startBtn = $('start-processing');
+
+  function setSelectedFile(file) {
+    if (!file) return;
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+    setDisplay('file-info', true);
+    fileName.textContent = file.name;
+  }
+
+  browseBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', () => {
+    const f = fileInput.files?.[0];
+    if (f) setSelectedFile(f);
+  });
+
+  ;['dragenter','dragover'].forEach(evt => uploadArea?.addEventListener(evt, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    uploadArea.classList.add('bg-white');
+  }));
+  ;['dragleave','drop'].forEach(evt => uploadArea?.addEventListener(evt, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    uploadArea.classList.remove('bg-white');
+  }));
+  uploadArea?.addEventListener('drop', (e) => {
+    const f = e.dataTransfer?.files?.[0];
+    if (f && (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))) {
+      setSelectedFile(f);
+    }
+  });
+
+  startBtn?.addEventListener('click', async () => {
+    setDisplay('error-section', false);
+    const f = fileInput.files?.[0];
+    if (!f) {
+      setText('error-message', 'Please select a PDF file.');
+      setDisplay('error-section', true);
+      return;
+    }
+
+    const mode = (document.querySelector('input[name="processing-mode"]:checked')?.value) || 'ocr';
+
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('mode', mode);
+
+      const uploadResp = await fetch('/upload', { method: 'POST', body: fd });
+      const uploadJson = await uploadResp.json();
+      if (!uploadResp.ok || !uploadJson.success) throw new Error(uploadJson.error || 'Upload failed');
+
+      currentSessionId = uploadJson.session_id;
+      ensureSocket();
+      socket.emit('join_session', { session_id: currentSessionId });
+
+      // Show processing UI
+      setDisplay('processing-section', true);
+      setDisplay('results-section', false);
+      setDisplay('summary-section', false);
+      setDisplay('voiceover-section', false);
+
+      // Reset progress UI
+      ['splitting','ocr','merging','text-extraction'].forEach((k) => {
+        setProgress(`${k}-progress`, 0);
+        setBadge(`${k}-status`, 'Waiting', 'secondary');
+        setText(`${k}-message`, 'Waiting to start...');
+      });
+
+      // Start processing
+      const procResp = await fetch(`/process/${currentSessionId}`);
+      const procJson = await procResp.json();
+      if (!procResp.ok || !procJson.success) throw new Error(procJson.error || 'Failed to start processing');
+      scrollIntoViewIfHidden('processing-section');
+    } catch (err) {
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+    }
+  });
+}
+
+// Results actions
+function initResultHandlers() {
+  $('summarize-btn')?.addEventListener('click', () => {
+    setDisplay('summary-section', true);
+    scrollIntoViewIfHidden('summary-section');
+  });
+
+  // Open search panel from results
+  $('search-btn')?.addEventListener('click', () => {
+    setDisplay('search-section', true);
+    scrollIntoViewIfHidden('search-section');
+  });
+
+  $('generate-summary-btn')?.addEventListener('click', async () => {
+    if (!currentSessionId) return;
+    setDisplay('summary-result', false);
+    setDisplay('summary-progress-container', true);
+    setBadge('summarization-status', 'Processing', 'primary');
+    setProgress('summarization-progress', 0);
+    setText('summarization-message', 'Starting summarization...');
+
+    const prompt = $('custom-prompt')?.value || '';
+    try {
+      const resp = await fetch(`/summarize/${currentSessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Failed to summarize');
+      // Server will also emit summary_complete; still set text as fallback
+      if (data.summary) {
+        setDisplay('summary-progress-container', false);
+        setDisplay('summary-result', true);
+        setText('summary-text', data.summary);
+      }
+    } catch (err) {
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+    }
+  });
+
+  $('generate-voiceover-btn')?.addEventListener('click', () => {
+    setDisplay('voiceover-section', true);
+    scrollIntoViewIfHidden('voiceover-section');
+  });
+}
+
+// Document search handlers
+function initSearchHandlers() {
+  const queryInput = $('search-query');
+  const nInput = $('search-n');
+  const runBtn = $('search-run-btn');
+  const statsBtn = $('load-vector-stats-btn');
+  const resultsContainer = $('search-results-container');
+  const resultsList = $('search-results');
+  const statsBox = $('vector-stats');
+
+  function renderResults(items) {
+    if (!resultsList) return;
+    resultsList.innerHTML = '';
+    if (!Array.isArray(items) || items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'text-muted';
+      empty.textContent = 'No results found.';
+      resultsList.appendChild(empty);
+      return;
+    }
+    items.forEach((it, idx) => {
+      const div = document.createElement('div');
+      div.className = 'list-group-item';
+      const content = (it.content || '').toString();
+      const preview = content.length > 600 ? content.slice(0, 600) + '…' : content;
+      const src = it.source || 'Unknown';
+      const page = it.page_number ? `Page ${it.page_number}` : '';
+      const score = (typeof it.relevance_score === 'number') ? it.relevance_score.toFixed(4) : '';
+      div.innerHTML = `
+        <div class="d-flex w-100 justify-content-between">
+          <h6 class="mb-1">Result ${idx + 1}</h6>
+          <small class="text-muted">${page}</small>
+        </div>
+        <p class="mb-1" style="white-space: pre-wrap">${preview}</p>
+        <small class="text-muted">Source: ${src}${score ? ` • score: ${score}` : ''}</small>
+      `;
+      resultsList.appendChild(div);
+    });
+  }
+
+  runBtn?.addEventListener('click', async () => {
+    setDisplay('error-section', false);
+    if (!currentSessionId) {
+      setText('error-message', 'No active session. Upload and process a PDF first.');
+      setDisplay('error-section', true);
+      return;
+    }
+    const q = (queryInput?.value || '').trim();
+    const n = Math.max(1, Math.min(20, parseInt(nInput?.value || '5', 10)));
+    if (!q) {
+      setText('error-message', 'Enter a search query.');
+      setDisplay('error-section', true);
+      return;
+    }
+    try {
+      enable(runBtn, false);
+      setDisplay('search-results-container', true);
+      if (resultsList) resultsList.innerHTML = '<div class="text-muted">Searching…</div>';
+      const resp = await fetch(`/search/${currentSessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, n })
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Search failed');
+      renderResults(data.results || []);
+    } catch (err) {
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+    } finally {
+      enable(runBtn, true);
+    }
+  });
+
+  // Enter key triggers search
+  queryInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runBtn?.click();
+    }
+  });
+
+  // Load vector DB stats
+  statsBtn?.addEventListener('click', async () => {
+    setDisplay('error-section', false);
+    if (!currentSessionId) {
+      setText('error-message', 'No active session. Upload and process a PDF first.');
+      setDisplay('error-section', true);
+      return;
+    }
+    try {
+      statsBox.textContent = 'Loading…';
+      const resp = await fetch(`/vector-stats/${currentSessionId}`);
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Failed to load stats');
+      const parts = [];
+      if (data.collection_name) parts.push(`Collection: ${data.collection_name}`);
+      if (typeof data.total_chunks === 'number') parts.push(`Chunks: ${data.total_chunks}`);
+      if (data.status) parts.push(`Status: ${data.status}`);
+      statsBox.textContent = parts.join('\n');
+    } catch (err) {
+      statsBox.textContent = '';
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+    }
+  });
+}
+
+// Voiceover (session) handlers
+function initVoiceoverHandlers() {
+  // Source toggle
+  const summaryRadio = $('summary-voice-mode');
+  const customRadio = $('custom-voice-mode');
+  function updateSourceUI() {
+    const val = document.querySelector('input[name="voiceover-source"]:checked')?.value || 'summary';
+    setDisplay('custom-text-container', val === 'custom');
+  }
+  summaryRadio?.addEventListener('change', updateSourceUI);
+  customRadio?.addEventListener('change', updateSourceUI);
+  updateSourceUI();
+
+  $('start-voiceover-btn')?.addEventListener('click', async () => {
+    if (!currentSessionId) return;
+
+    const source = document.querySelector('input[name="voiceover-source"]:checked')?.value || 'summary';
+    const voice = $('voice-select')?.value || 'nova';
+    const speed = parseFloat($('speed-select')?.value || '1.0');
+    const format = $('format-select')?.value || 'mp3';
+    const bgFileInput = $('backgroundImageMain');
+    const bgFile = bgFileInput?.files?.[0] || null;
+
+    let text = '';
+    if (source === 'summary') text = $('summary-text')?.textContent?.trim() || '';
+    if (source === 'custom') text = $('voiceover-text')?.value?.trim() || '';
+    if (!text) {
+      setText('error-message', 'No text available for voiceover. Generate a summary or provide custom text.');
+      setDisplay('error-section', true);
+      return;
+    }
+
+    // Reset UI
+    setDisplay('voiceover-result', false);
+    setDisplay('voiceover-progress-container', true);
+    setProgress('voiceover-progress', 10);
+    setBadge('voiceover-status', 'Processing', 'dark');
+    setText('voiceover-message', 'Preparing synthesis...');
+
+    try {
+      let resp, data;
+      if (bgFile) {
+        const fd = new FormData();
+        fd.append('text', text);
+        fd.append('voice', voice);
+        fd.append('speed', String(speed));
+        fd.append('format', format);
+        fd.append('backgroundImage', bgFile);
+        resp = await fetch(`/generate-voiceover/${currentSessionId}`, { method: 'POST', body: fd });
+      } else {
+        resp = await fetch(`/generate-voiceover/${currentSessionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voice, speed, format })
+        });
+      }
+      data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Failed to generate voiceover');
+
+      // Show result
+      lastVoiceoverUrl = data.file_url;
+      const isVideo = (data.format || format) === 'mp4' || (lastVoiceoverUrl && lastVoiceoverUrl.endsWith('.mp4'));
+      const audioEl = $('voiceover-audio');
+      const videoEl = $('voiceover-video');
+      if (isVideo) {
+        audioEl.style.display = 'none';
+        videoEl.style.display = '';
+        videoEl.src = lastVoiceoverUrl;
+      } else {
+        videoEl.style.display = 'none';
+        audioEl.style.display = '';
+        audioEl.src = lastVoiceoverUrl;
+      }
+      setDisplay('voiceover-result', true);
+      setDisplay('voiceover-progress-container', false);
+
+      $('download-voiceover-btn').onclick = () => {
+        if (lastVoiceoverUrl) window.open(`${lastVoiceoverUrl}?dl=1`, '_blank');
+      };
+    } catch (err) {
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+      setDisplay('voiceover-progress-container', false);
+    }
+  });
+}
+
+// Standalone voiceover handlers
+function initStandaloneVoiceover() {
+  $('show-standalone-voiceover-btn')?.addEventListener('click', () => {
+    const panel = $('standalone-voiceover-panel');
+    const visible = panel && panel.style.display !== 'none';
+    setDisplay('standalone-voiceover-panel', !visible);
+    if (!visible) scrollIntoViewIfHidden('standalone-voiceover-panel');
+  });
+
+  $('generate-standalone-voiceover-btn')?.addEventListener('click', async () => {
+    setDisplay('error-section', false);
+    const text = $('standalone-voiceover-text')?.value?.trim() || '';
+    const voice = $('standalone-voice-select')?.value || 'nova';
+    const speed = $('standalone-speed-select')?.value || '1.0';
+    const format = $('standalone-format-select')?.value || 'mp3';
+    const bgFile = $('backgroundImageStandalone')?.files?.[0] || null;
+
+    if (!text) {
+      setText('error-message', 'Enter text to generate a voiceover.');
+      setDisplay('error-section', true);
+      return;
+    }
+
+    // Reset progress UI
+    setDisplay('standalone-voiceover-result', false);
+    setDisplay('standalone-voiceover-progress', true);
+    setProgress('standalone-voiceover-progress-bar', 15);
+    setBadge('standalone-voiceover-status', 'Processing', 'info');
+    setText('standalone-voiceover-message', 'Generating voiceover...');
+
+    try {
+      let resp, data;
+      if (bgFile) {
+        const fd = new FormData();
+        fd.append('text', text);
+        fd.append('voice', voice);
+        fd.append('speed', String(speed));
+        fd.append('format', format);
+        // Server expects field name 'backgroundImage'
+        fd.append('backgroundImage', bgFile);
+        resp = await fetch(`/generate-voiceover/standalone`, { method: 'POST', body: fd });
+      } else {
+        resp = await fetch(`/generate-voiceover/standalone`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voice, speed: parseFloat(speed), format })
+        });
+      }
+      data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Failed to generate voiceover');
+
+      const url = data.file_url;
+      const fmt = (data.format || format || '').toLowerCase();
+
+      const audioEl = $('standalone-voiceover-audio');
+      const videoEl = $('standalone-voiceover-video');
+      if (fmt === 'mp4' || (url && url.endsWith('.mp4'))) {
+        audioEl.style.display = 'none';
+        videoEl.style.display = '';
+        videoEl.src = url;
+      } else {
+        videoEl.style.display = 'none';
+        audioEl.style.display = '';
+        audioEl.src = url;
+      }
+
+      $('download-standalone-voiceover-btn').onclick = () => {
+        if (url) window.open(`${url}?dl=1`, '_blank');
+      };
+
+      setProgress('standalone-voiceover-progress-bar', 100);
+      setBadge('standalone-voiceover-status', 'Complete', 'success');
+      setText('standalone-voiceover-message', 'Voiceover ready.');
+      setDisplay('standalone-voiceover-progress', false);
+      setDisplay('standalone-voiceover-result', true);
+    } catch (err) {
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+      setDisplay('standalone-voiceover-progress', false);
+    }
+  });
+}
+
+// App init
 document.addEventListener('DOMContentLoaded', () => {
-    new PDFApp();
+  // Ensure error panel is hidden on load
+  setDisplay('error-section', false);
+  setText('error-message', '');
+
+  ensureSocket();
+  initUploadHandlers();
+  initResultHandlers();
+  initSearchHandlers();
+  initVoiceoverHandlers();
+  initStandaloneVoiceover();
 });

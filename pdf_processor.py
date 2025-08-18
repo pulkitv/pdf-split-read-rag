@@ -1,13 +1,14 @@
 import os
 import tempfile
 from pypdf import PdfReader, PdfWriter
-from pdf2image import convert_from_path
+from pdf2image.pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
 import io
 import subprocess
 import platform
 import warnings
+import shutil
 
 class PDFProcessor:
     def __init__(self, upload_folder, temp_folder, processed_folder):
@@ -290,69 +291,63 @@ class PDFProcessor:
             raise Exception(f"Error merging PDFs: {str(e)}")
     
     def extract_text_from_pdfs(self, pdf_files):
-        """Extract text content from all PDF files"""
-        all_text = []
-        
+        """Extract text from a list of PDF files (typically single-page PDFs). Returns list[{'file','content'}]."""
+        results = []
         try:
-            for pdf_file in pdf_files:
-                reader = PdfReader(pdf_file)
-                page_text = ""
-                
-                for page in reader.pages:
-                    page_text += page.extract_text() + "\n"
-                
-                if page_text.strip():
-                    all_text.append({
-                        'file': os.path.basename(pdf_file),
-                        'content': page_text.strip()
+            # Keep original order
+            for pdf_path in pdf_files:
+                try:
+                    reader = PdfReader(pdf_path)
+                    page_texts = []
+                    for page in reader.pages:
+                        text = page.extract_text() or ""
+                        # Normalize whitespace
+                        text = " ".join(text.split())
+                        page_texts.append(text)
+                    combined = "\n\n".join([t for t in page_texts if t])
+                    results.append({
+                        'file': os.path.basename(pdf_path),
+                        'content': combined
                     })
-            
-            return all_text
-            
+                except Exception as e:
+                    print(f"Warning: Failed to extract text from {pdf_path}: {e}")
+                    results.append({
+                        'file': os.path.basename(pdf_path),
+                        'content': ""
+                    })
+            return results
         except Exception as e:
-            raise Exception(f"Error extracting text: {str(e)}")
+            raise Exception(f"Error extracting text from PDFs: {str(e)}")
     
     def extract_text_from_single_pdf(self, pdf_path, progress_callback=None):
-        """Extract text content from a single PDF file for quick summary"""
+        """Extract text from a single multi-page PDF. Returns a single concatenated string.
+        Progress callback (if provided) will be called with 0-50 to align with UI expectations.
+        """
         try:
-            if progress_callback:
-                progress_callback(10)
-            
             reader = PdfReader(pdf_path)
-            total_pages = len(reader.pages)
-            extracted_text = ""
-            
-            if progress_callback:
-                progress_callback(20)
-            
-            for page_num, page in enumerate(reader.pages):
-                page_text = page.extract_text()
-                if page_text.strip():
-                    extracted_text += page_text + "\n\n"
-                
-                # Update progress for text extraction (20% to 50%)
+            total_pages = len(reader.pages) or 1
+            texts = []
+            for i, page in enumerate(reader.pages):
+                try:
+                    text = page.extract_text() or ""
+                except Exception as e:
+                    print(f"Warning: Text extraction failed on page {i+1}: {e}")
+                    text = ""
+                texts.append(text)
                 if progress_callback:
-                    progress = 20 + int((page_num + 1) / total_pages * 30)
+                    progress = int(((i + 1) / total_pages) * 50)
                     progress_callback(progress)
-            
-            if not extracted_text.strip():
-                raise Exception("No text could be extracted from the PDF. The PDF might contain only images or be protected.")
-            
-            if progress_callback:
-                progress_callback(50)
-            
-            return extracted_text.strip()
-            
+            # Normalize and join
+            joined = "\n\n".join([" ".join(t.split()) for t in texts if t])
+            return joined
         except Exception as e:
             raise Exception(f"Error extracting text from PDF: {str(e)}")
-
+    
     def cleanup_temp_files(self, session_id):
-        """Clean up temporary files for a session"""
-        session_temp_dir = os.path.join(self.temp_folder, session_id)
-        
+        """Remove temporary files for a session (split pages and OCR outputs)."""
         try:
-            if os.path.exists(session_temp_dir):
-                import shutil
-                shutil.rmtree(session_temp_dir)
+            session_temp_dir = os.path.join(self.temp_folder, session_id)
+            if os.path.isdir(session_temp_dir):
+                shutil.rmtree(session_temp_dir, ignore_errors=True)
         except Exception as e:
-            print(f"Warning: Could not clean up temp files: {str(e)}")
+            print(f"Warning: Failed to clean up temp files for session {session_id}: {e}")

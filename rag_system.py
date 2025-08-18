@@ -3,16 +3,19 @@ import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import numpy as np
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, cast
+from openai.types.chat import ChatCompletionMessageParam
 import time
 import tiktoken
+import shutil
+import tempfile
 
 class RAGSystem:
     def __init__(self):
         self.chroma_client: Optional[Any] = None
         self.openai_client = None
         self.collections = {}
+        self.db_path: Optional[str] = None
         
         # Load environment configuration for text chunking
         chunk_size = int(os.getenv('TEXT_CHUNK_SIZE', 1000))
@@ -24,29 +27,34 @@ class RAGSystem:
             length_function=len,
         )
         
-        # Load OpenAI configuration from environment - use 16k model by default
-        self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo-16k')
+        # Load OpenAI configuration from environment - default to modern models
+        self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
         self.openai_max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', 2000))
         self.openai_temperature = float(os.getenv('OPENAI_TEMPERATURE', 0))
+        
+        # Optional fallback models when the primary model isn't available
+        env_fallbacks = os.getenv('OPENAI_MODEL_FALLBACKS', '')
+        self.model_fallbacks = [m.strip() for m in env_fallbacks.split(',') if m.strip()] or [
+            'gpt-4o-mini',
+            'gpt-4o',
+            'gpt-4-turbo',
+            'gpt-4',
+            'gpt-3.5-turbo-0125'
+        ]
         
         # Token counting setup
         try:
             self.tokenizer = tiktoken.encoding_for_model(self.openai_model)
-        except:
+        except Exception:
             # Fallback to a common tokenizer if model-specific one isn't available
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         
-        # Calculate safe context limits
-        if "16k" in self.openai_model:
-            self.max_context_tokens = 16385
-        elif "gpt-4" in self.openai_model:
-            self.max_context_tokens = 8192
-        else:
-            self.max_context_tokens = 4097
+        # Calculate safe context limits with broader model coverage
+        self.max_context_tokens = self._infer_context_window(self.openai_model)
             
         # Reserve tokens for system prompt, user prompt structure, and response
         self.reserved_tokens = 1000 + self.openai_max_tokens
-        self.max_content_tokens = self.max_context_tokens - self.reserved_tokens
+        self.max_content_tokens = max(1024, self.max_context_tokens - self.reserved_tokens)
         
         # Vector database configuration
         self.vector_batch_size = int(os.getenv('VECTOR_BATCH_SIZE', 100))
@@ -57,29 +65,91 @@ class RAGSystem:
         if api_key:
             self.openai_client = OpenAI(api_key=api_key)
         
+        # Embedding model configuration (modern default)
+        self.embedding_model = os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
+        
         # Initialize ChromaDB
         self._setup_chromadb()
-    
+
+    def _infer_context_window(self, model: str) -> int:
+        """Heuristically determine the model context window."""
+        name = (model or '').lower()
+        # Newer 4o/4.1/turbo/o* models generally support 128k
+        if any(k in name for k in ['gpt-4o', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-mini', '4o-mini', 'o1', 'o3']):
+            return 128000
+        if '32k' in name:
+            return 32768
+        if '16k' in name or '3.5' in name:
+            return 16385
+        if 'gpt-4' in name:
+            return 8192
+        # Sensible default
+        return 8192
+
     def _setup_chromadb(self):
         """Initialize ChromaDB client"""
         try:
-            # Create ChromaDB directory using environment path
+            # Preferred persistent path from env
             db_path = os.path.join(os.getcwd(), self.chroma_db_path)
             os.makedirs(db_path, exist_ok=True)
+            self.db_path = db_path
             
-            # Initialize ChromaDB client
-            self.chroma_client = chromadb.PersistentClient(
-                path=db_path,
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
+            # Try persistent client first
+            try:
+                self.chroma_client = chromadb.PersistentClient(
+                    path=db_path,
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True
+                    )
                 )
-            )
-            
+                return
+            except Exception as e:
+                print(f"Warning: Persistent Chroma init failed ({e}). Will try a fresh temp directory...")
+                # Try with a brand-new temp directory to avoid schema/lock issues
+                tmp_dir = tempfile.mkdtemp(prefix="chroma_db_")
+                self.db_path = tmp_dir
+                try:
+                    self.chroma_client = chromadb.PersistentClient(
+                        path=tmp_dir,
+                        settings=Settings(
+                            anonymized_telemetry=False,
+                            allow_reset=True
+                        )
+                    )
+                    print(f"Chroma persistent client initialized at temp path: {tmp_dir}")
+                    return
+                except Exception as e2:
+                    print(f"Warning: Temp persistent Chroma init failed ({e2}). Falling back to EphemeralClient.")
+                    self.chroma_client = chromadb.EphemeralClient()
+                    self.db_path = None
+                    return
         except Exception as e:
             print(f"Error setting up ChromaDB: {str(e)}")
             raise
-    
+
+    def _reset_chroma_storage(self):
+        """Reset the Chroma persistent storage to recover from schema mismatches. If persistent setup fails, fall back to EphemeralClient."""
+        try:
+            # Best-effort close
+            self.chroma_client = None
+            if self.db_path and os.path.isdir(self.db_path):
+                shutil.rmtree(self.db_path, ignore_errors=True)
+            # Attempt re-init persistent or ephemeral
+            self._setup_chromadb()
+            # Clear in-memory collection cache
+            self.collections.clear()
+            print("ChromaDB storage reset. Database reinitialized (persistent or ephemeral).")
+        except Exception as e:
+            # Last-resort fallback to ephemeral
+            try:
+                self.chroma_client = chromadb.EphemeralClient()
+                self.db_path = None
+                self.collections.clear()
+                print("ChromaDB reset fallback to EphemeralClient succeeded.")
+            except Exception:
+                raise Exception(f"Failed to reset ChromaDB storage: {str(e)}")
+
     def count_tokens(self, text: str) -> int:
         """Count tokens in text using the model's tokenizer"""
         try:
@@ -108,7 +178,8 @@ class RAGSystem:
 
     def create_vector_db(self, text_data: List[Dict], session_id: str, progress_callback=None):
         """Create vector database from extracted text"""
-        if not self.chroma_client:
+        client = self.chroma_client
+        if client is None:
             raise Exception("ChromaDB client not initialized")
             
         try:
@@ -116,15 +187,33 @@ class RAGSystem:
             
             # Delete existing collection if it exists
             try:
-                self.chroma_client.delete_collection(collection_name)
+                client.delete_collection(collection_name)
             except:
                 pass
             
-            # Create new collection
-            collection = self.chroma_client.create_collection(
-                name=collection_name,
-                metadata={"description": f"Document collection for session {session_id}"}
-            )
+            # Create new collection with robustness
+            def _create(c):
+                return c.create_collection(
+                    name=collection_name,
+                    metadata={"description": f"Document collection for session {session_id}"}
+                )
+            
+            try:
+                collection = _create(client)
+            except Exception as ce:
+                msg = str(ce).lower()
+                if ("no such column: collections.topic" in msg) or ("collections.topic" in msg) or ("disk i/o error" in msg):
+                    self._reset_chroma_storage()
+                    client = self.chroma_client
+                    if client is None:
+                        self.chroma_client = chromadb.EphemeralClient()
+                        client = self.chroma_client
+                    collection = _create(client)
+                else:
+                    # Final fallback: switch to ephemeral
+                    self.chroma_client = chromadb.EphemeralClient()
+                    client = self.chroma_client
+                    collection = _create(client)
             
             # Process each page's text
             all_chunks = []
@@ -154,26 +243,36 @@ class RAGSystem:
                         all_ids.append(chunk_id)
                 
                 # Update progress
-                progress = int((page_idx + 1) / total_pages * 100)
+                progress = int((page_idx + 1) / max(1, total_pages) * 100)
                 if progress_callback:
-                    progress_callback(progress)
+                    progress_callback(min(progress, 40))  # Cap during ingestion
             
-            # Add documents to collection using environment-configured batch size
+            # Add documents to collection using environment-configured batch size with embeddings
             for i in range(0, len(all_chunks), self.vector_batch_size):
                 batch_chunks = all_chunks[i:i + self.vector_batch_size]
                 batch_metadatas = all_metadatas[i:i + self.vector_batch_size]
                 batch_ids = all_ids[i:i + self.vector_batch_size]
                 
+                # Create embeddings for this batch
+                embeddings = self._embed_texts(batch_chunks)
+                
                 collection.add(
                     documents=batch_chunks,
                     metadatas=batch_metadatas,
-                    ids=batch_ids
+                    ids=batch_ids,
+                    embeddings=embeddings
                 )
+                # Progress through 40-90 during vectorization
+                if progress_callback:
+                    pct = 40 + int((i + len(batch_chunks)) / max(1, len(all_chunks)) * 50)
+                    progress_callback(min(pct, 90))
             
             # Store collection reference
             self.collections[session_id] = collection
             
             print(f"Created vector database with {len(all_chunks)} chunks")
+            if progress_callback:
+                progress_callback(100)
             
         except Exception as e:
             raise Exception(f"Error creating vector database: {str(e)}")
@@ -182,16 +281,18 @@ class RAGSystem:
         """Query the vector database for relevant chunks"""
         try:
             if session_id not in self.collections:
-                if not self.chroma_client:
+                client = self.chroma_client
+                if client is None:
                     raise Exception("ChromaDB client not initialized")
                 collection_name = f"documents_{session_id}"
-                self.collections[session_id] = self.chroma_client.get_collection(collection_name)
+                self.collections[session_id] = client.get_collection(collection_name)
             
             collection = self.collections[session_id]
             
-            # Query the collection
+            # Embed query and search by embedding for reliability
+            q_emb = self._embed_texts([query])[0]
             results = collection.query(
-                query_texts=[query],
+                query_embeddings=[q_emb],
                 n_results=n_results
             )
             
@@ -209,6 +310,7 @@ class RAGSystem:
         if len(chunks) <= 3:
             combined_text = "\n\n".join(chunks)
             if self.count_tokens(combined_text) <= self.max_content_tokens:
+                if progress_callback: progress_callback(60)
                 return self._generate_single_summary(combined_text, system_prompt)
         
         # For many chunks, use hierarchical summarization
@@ -242,151 +344,238 @@ class RAGSystem:
         final_text = "\n\n".join(chunk_summaries)
         final_text = self.truncate_to_token_limit(final_text, self.max_content_tokens)
         
+        if progress_callback: progress_callback(92)
         return self._generate_single_summary(final_text, system_prompt)
     
+    def _embed_texts(self, texts: List[str]) -> List[List[float]]:
+        """Create embeddings for a list of texts using OpenAI embeddings API."""
+        if not self.openai_client:
+            raise Exception("OpenAI API key not configured for embeddings")
+        try:
+            resp = self.openai_client.embeddings.create(
+                model=self.embedding_model,
+                input=texts
+            )
+            return [d.embedding for d in resp.data]
+        except Exception as e:
+            raise Exception(f"Error creating embeddings: {str(e)}")
+    
     def _generate_single_summary(self, content: str, system_prompt: str) -> str:
-        """Generate a single summary for the given content"""
+        """Call OpenAI Chat Completion to summarize given content with a system prompt. Includes model fallbacks."""
         if not self.openai_client:
-            raise Exception("OpenAI client not configured. Please set OPENAI_API_KEY environment variable.")
-            
-        user_prompt = f"Please summarize the following Economic Times newspaper content:\n\n{content}"
+            return "OpenAI API key not configured. Cannot generate summary."
         
-        # Double-check token count
-        total_tokens = (
-            self.count_tokens(system_prompt) + 
-            self.count_tokens(user_prompt) + 
-            self.openai_max_tokens
-        )
+        messages = cast(List[ChatCompletionMessageParam], [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Summarize the following content. Be concise and structured.\n\n{content}"}
+        ])
         
-        if total_tokens > self.max_context_tokens:
-            # Further truncate content if needed
-            available_tokens = self.max_context_tokens - self.count_tokens(system_prompt) - self.openai_max_tokens - 100
-            content = self.truncate_to_token_limit(content, available_tokens)
-            user_prompt = f"Please summarize the following Economic Times newspaper content:\n\n{content}"
+        # Try the configured model first, then fallbacks (ensuring uniqueness/order)
+        tried = []
+        ordered_models = []
+        for m in [self.openai_model] + self.model_fallbacks:
+            if m and m not in tried:
+                ordered_models.append(m)
+                tried.append(m)
         
-        response = self.openai_client.chat.completions.create(
-            model=self.openai_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=self.openai_max_tokens,
-            temperature=self.openai_temperature
-        )
+        errors = []
+        for model in ordered_models:
+            try:
+                resp = self.openai_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=self.openai_temperature,
+                    max_tokens=self.openai_max_tokens
+                )
+                return (resp.choices[0].message.content or "").strip()
+            except Exception as e:
+                errors.append(f"{model}: {str(e)}")
+                # Try next fallback
+                continue
         
-        content = response.choices[0].message.content or "No summary generated by AI model."
-        return content
+        raise Exception("All summary model attempts failed: " + " | ".join(errors))
+    
+    def _get_collection_for_session(self, session_id: str):
+        """Get or open the Chroma collection for a session."""
+        if session_id in self.collections:
+            return self.collections[session_id]
+        if not self.chroma_client:
+            raise Exception("ChromaDB client not initialized")
+        name = f"documents_{session_id}"
+        try:
+            collection = self.chroma_client.get_collection(name)
+            self.collections[session_id] = collection
+            return collection
+        except Exception as e:
+            raise Exception(f"Collection not found for session {session_id}: {str(e)}")
 
-    def generate_summary(self, session_id: str, custom_prompt: str = "", progress_callback=None):
-        """Generate AI summary using OpenAI and RAG with proper token management"""
-        if not self.openai_client:
-            raise Exception("OpenAI client not configured. Please set OPENAI_API_KEY environment variable.")
-            
+    def _fetch_all_chunks(self, session_id: str, batch_size: int = 1000) -> List[str]:
+        """Fetch all document chunks for a session from its collection."""
+        collection = self._get_collection_for_session(session_id)
+        chunks: List[str] = []
         try:
-            if progress_callback:
+            total = collection.count()
+            offset = 0
+            while offset < total:
+                batch = collection.get(
+                    include=["documents"],
+                    limit=min(batch_size, total - offset),
+                    offset=offset
+                )
+                docs = (batch or {}).get("documents") or []
+                # Chroma returns a flat list when using get() without IDs per v0.5+
+                chunks.extend([d for d in docs if isinstance(d, str) and d.strip()])
+                offset += len(docs)
+                if len(docs) == 0:
+                    break
+            return chunks
+        except Exception as e:
+            # Fallback: try a single get without pagination
+            try:
+                batch = collection.get(include=["documents"]) or {}
+                docs = batch.get("documents") or []
+                return [d for d in docs if isinstance(d, str) and d.strip()]
+            except Exception as e2:
+                raise Exception(f"Failed to fetch chunks: {str(e)} | {str(e2)}")
+
+    def generate_summary(self, session_id: str, custom_prompt: str = "", progress_callback=None) -> str:
+        """Generate a summary for all chunks stored for the given session."""
+        # Set an initial progress value for UI feedback
+        if progress_callback:
+            try:
                 progress_callback(10)
-            
-            # Default summarization prompt
-            default_prompt = """
-           Extract the list of all the companies mentioned in the content. For each company in the list, mention the following context:
-           1. Name of the company, Sentiment: Positive/Neutral/Negative (with color dot red/amber/green) of the news related to the company in the content.
-           2. 30-50 words summary with fact based context related to the company in the content. The summary should include the logic used to derive the sentiment of the news.
-           3. Source of the news, Page number in the newspaper.
-           """
-            
-            # Use custom prompt if provided, otherwise use default
-            system_prompt = custom_prompt if custom_prompt.strip() else default_prompt
-            
-            if progress_callback:
+            except Exception:
+                pass
+        # Fetch chunks
+        chunks = self._fetch_all_chunks(session_id)
+        if not chunks:
+            raise Exception("No content available to summarize for this session")
+        if progress_callback:
+            try:
                 progress_callback(30)
-            
-            # Get all document chunks for context
-            collection = self.collections.get(session_id)
-            if not collection:
-                if not self.chroma_client:
-                    raise Exception("ChromaDB client not initialized")
-                collection_name = f"documents_{session_id}"
-                collection = self.chroma_client.get_collection(collection_name)
-                self.collections[session_id] = collection
-            
-            # Get all documents from the collection
-            all_docs = collection.get()
-            
-            if progress_callback:
-                progress_callback(50)
-            
-            # Handle the documents properly
-            documents = all_docs.get('documents', [])
-            if not documents:
-                raise Exception("No documents found in the collection")
-            
-            # Convert documents to list of strings
-            doc_chunks = [str(doc) for doc in documents if doc and str(doc).strip()]
-            
-            if not doc_chunks:
-                raise Exception("No valid document content found")
-            
-            print(f"Processing {len(doc_chunks)} document chunks...")
-            print(f"Using model: {self.openai_model} with max context: {self.max_context_tokens} tokens")
-            
-            # Calculate total tokens
-            total_content = "\n\n".join(doc_chunks)
-            total_tokens = self.count_tokens(total_content)
-            print(f"Total content tokens: {total_tokens}")
-            
-            if progress_callback:
-                progress_callback(70)
-            
-            # Choose summarization strategy based on content length
-            if total_tokens <= self.max_content_tokens:
-                # Content fits in one request
-                print("Using single-pass summarization...")
-                summary = self._generate_single_summary(total_content, system_prompt)
-            else:
-                # Use hierarchical summarization
-                print("Content too long, using hierarchical summarization...")
-                summary = self.generate_summary_hierarchical(doc_chunks, system_prompt, progress_callback)
-            
-            if progress_callback:
+            except Exception:
+                pass
+        # Build system prompt
+        default_prompt = (
+            "You are an expert news editor. Summarize the newspaper content with a focus on key economic, "
+            "business, policy, markets, and company developments. Use concise bullet points grouped into clear "
+            "sections (e.g., Macro, Markets, Sectors, Companies, Policy, Global). Keep it factual and avoid speculation."
+        )
+        system_prompt = (custom_prompt.strip() or default_prompt)
+        # Delegate to hierarchical summarizer (handles token limits and progress updates internally)
+        summary = self.generate_summary_hierarchical(chunks, system_prompt, progress_callback=progress_callback)
+        if progress_callback:
+            try:
                 progress_callback(100)
-            
-            return summary
-            
-        except Exception as e:
-            print(f"Summarization error: {str(e)}")
-            if "api_key" in str(e).lower():
-                raise Exception("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
-            elif "context_length_exceeded" in str(e).lower():
-                raise Exception("Content is too long even for hierarchical processing. Please try with a shorter document.")
-            else:
-                raise Exception(f"Error generating summary: {str(e)}")
-    
-    def get_document_stats(self, session_id: str):
-        """Get statistics about the document collection"""
+            except Exception:
+                pass
+        return summary
+
+    def get_document_stats(self, session_id: str) -> Dict[str, Any]:
+        """Return basic stats about the session's collection."""
+        name = f"documents_{session_id}"
         try:
-            collection = self.collections.get(session_id)
-            if not collection:
-                if not self.chroma_client:
-                    raise Exception("ChromaDB client not initialized")
-                collection_name = f"documents_{session_id}"
-                collection = self.chroma_client.get_collection(collection_name)
-                self.collections[session_id] = collection
-            
-            # Get collection info
-            count = collection.count()
-            
+            collection = self._get_collection_for_session(session_id)
+            count = 0
+            try:
+                count = collection.count()
+            except Exception:
+                # Fallback via get (may be slower)
+                batch = collection.get(include=["ids"]) or {}
+                ids = batch.get("ids") or []
+                count = len(ids)
+            status = "ready" if count > 0 else "empty"
             return {
+                "collection_name": name,
                 "total_chunks": count,
-                "collection_name": f"documents_{session_id}",
-                "status": "ready"
+                "status": status
             }
-            
         except Exception as e:
             return {
-                "error": str(e),
-                "status": "error"
+                "collection_name": name,
+                "total_chunks": 0,
+                "status": f"not_found: {str(e)}"
             }
-    
+
+    def search_documents_compact(self, session_id: str, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """Compact search returning minimal fields. Kept for internal use; prefer search_documents()."""
+        res = self.query_documents(session_id, query, n_results=max_results)
+        documents = (res.get("documents") or [[]])[0] if isinstance(res.get("documents"), list) else []
+        metadatas = (res.get("metadatas") or [[]])[0] if isinstance(res.get("metadatas"), list) else []
+        distances = (res.get("distances") or [[]])[0] if isinstance(res.get("distances"), list) else []
+        items: List[Dict[str, Any]] = []
+        for idx in range(min(len(documents), len(metadatas))):
+            doc = documents[idx] if isinstance(documents[idx], str) else ""
+            meta = metadatas[idx] or {}
+            dist = None
+            if idx < len(distances):
+                try:
+                    dist = float(distances[idx])
+                except Exception:
+                    dist = None
+            score = None
+            if dist is not None:
+                try:
+                    score = 1.0 / (1.0 + max(0.0, dist))
+                except Exception:
+                    score = None
+            items.append({
+                "content": doc,
+                "source": meta.get("source"),
+                "page_number": meta.get("page_number"),
+                "chunk_index": meta.get("chunk_index"),
+                "relevance_score": score
+            })
+        return items
+
+    def search_documents(self, session_id: str, query: str, max_results: int = 5):
+        """High-level semantic search wrapper returning normalized results for the UI."""
+        try:
+            if not query or not query.strip():
+                return []
+
+            # Run semantic search via embeddings
+            raw = self.query_documents(session_id, query, n_results=max_results)
+
+            # Chroma returns lists per query; we queried once
+            docs_list = raw.get("documents", []) or []
+            metas_list = raw.get("metadatas", []) or []
+            ids_list = raw.get("ids", []) or []
+            dists_list = raw.get("distances", []) or []
+
+            # Flatten first dimension if present
+            docs = docs_list[0] if docs_list and isinstance(docs_list[0], list) else docs_list
+            metas = metas_list[0] if metas_list and isinstance(metas_list[0], list) else metas_list
+            ids = ids_list[0] if ids_list and isinstance(ids_list[0], list) else ids_list
+            dists = dists_list[0] if dists_list and isinstance(dists_list[0], list) else dists_list
+
+            results = []
+            count = min(len(docs or []), len(ids or []))
+            for i in range(count):
+                content = docs[i]
+                meta = metas[i] if i < len(metas) else {}
+                score = None
+                if dists and i < len(dists):
+                    try:
+                        score = float(dists[i])
+                    except Exception:
+                        score = None
+
+                results.append({
+                    "id": ids[i],
+                    "content": content,
+                    "source": (meta or {}).get("source"),
+                    "page_number": (meta or {}).get("page_number"),
+                    "chunk_index": (meta or {}).get("chunk_index"),
+                    "session_id": (meta or {}).get("session_id", session_id),
+                    "distance": score,
+                    "relevance_score": score
+                })
+
+            return results
+        except Exception as e:
+            raise Exception(f"Error during semantic search: {str(e)}")
+
     def cleanup_session(self, session_id: str):
         """Clean up vector database for a session"""
         try:
@@ -401,25 +590,3 @@ class RAGSystem:
                 
         except Exception as e:
             print(f"Warning: Could not clean up vector database: {str(e)}")
-    
-    def search_documents(self, session_id: str, search_query: str, max_results: int = 5):
-        """Search for specific content in the documents"""
-        try:
-            results = self.query_documents(session_id, search_query, max_results)
-            
-            formatted_results = []
-            if results and results['documents'] and results['documents'][0]:
-                for i, doc in enumerate(results['documents'][0]):
-                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                    
-                    formatted_results.append({
-                        'content': doc,
-                        'source': metadata.get('source', 'Unknown'),
-                        'page_number': metadata.get('page_number', 0),
-                        'relevance_score': results['distances'][0][i] if results['distances'] else 0
-                    })
-            
-            return formatted_results
-            
-        except Exception as e:
-            raise Exception(f"Error searching documents: {str(e)}")

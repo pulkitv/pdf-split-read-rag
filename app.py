@@ -190,7 +190,7 @@ def process_pdf_pipeline(session_id):
                 'step': 'splitting',
                 'progress': 0,
                 'message': 'Starting PDF splitting...'
-            }, room=session_id)
+            }, to=session_id)
             
             def splitting_progress_callback(progress):
                 try:
@@ -205,7 +205,7 @@ def process_pdf_pipeline(session_id):
                         'step': 'splitting',
                         'progress': progress,
                         'message': message
-                    }, room=session_id)
+                    }, to=session_id)
                     
                     # Add small delay to make progress visible
                     import time
@@ -226,7 +226,7 @@ def process_pdf_pipeline(session_id):
                 'step': 'ocr',
                 'progress': 0,
                 'message': 'Starting OCR processing - converting pages to images...'
-            }, room=session_id)
+            }, to=session_id)
             
             # Get total pages for better progress tracking
             from pypdf import PdfReader
@@ -262,7 +262,7 @@ def process_pdf_pipeline(session_id):
                         'step': 'ocr',
                         'progress': progress,
                         'message': message
-                    }, room=session_id)
+                    }, to=session_id)
                 except Exception as e:
                     print(f"Error in OCR progress callback: {e}", flush=True)
             
@@ -278,7 +278,7 @@ def process_pdf_pipeline(session_id):
                 'step': 'merging',
                 'progress': 0,
                 'message': 'Starting PDF merging...'
-            }, room=session_id)
+            }, to=session_id)
             
             def merging_progress_callback(progress):
                 try:
@@ -289,7 +289,7 @@ def process_pdf_pipeline(session_id):
                         'step': 'merging',
                         'progress': progress,
                         'message': message
-                    }, room=session_id)
+                    }, to=session_id)
                 except Exception as e:
                     print(f"Error in merging progress callback: {e}", flush=True)
             
@@ -305,7 +305,7 @@ def process_pdf_pipeline(session_id):
                 'step': 'text-extraction',
                 'progress': 0,
                 'message': 'Extracting text and creating vector database...'
-            }, room=session_id)
+            }, to=session_id)
             
             # Extract text from the OCR processed files
             print(f"Extracting text from {len(ocr_files)} OCR files", flush=True)
@@ -323,7 +323,7 @@ def process_pdf_pipeline(session_id):
                         'step': 'text-extraction',
                         'progress': progress,
                         'message': message
-                    }, room=session_id)
+                    }, to=session_id)
                 except Exception as e:
                     print(f"Error in text extraction progress callback: {e}", flush=True)
                     
@@ -350,7 +350,7 @@ def process_pdf_pipeline(session_id):
                 'session_id': session_id,
                 'merged_file_url': download_url,
                 'message': 'Processing completed successfully! Your document is ready for download and summarization.'
-            }, room=session_id)
+            }, to=session_id)
             print(f"=== PROCESSING PIPELINE COMPLETED for session {session_id} ===", flush=True)
         
     except Exception as e:
@@ -365,7 +365,7 @@ def process_pdf_pipeline(session_id):
             socketio.emit('processing_error', {
                 'session_id': session_id,
                 'error': str(e)
-            }, room=session_id)
+            }, to=session_id)
         except Exception as emit_error:
             print(f"Error emitting error message: {emit_error}", flush=True)
         
@@ -396,7 +396,7 @@ def process_direct_upload_pipeline(session_id):
                 'step': 'text-extraction',
                 'progress': 0,
                 'message': 'Extracting text from PDF...'
-            }, room=session_id)
+            }, to=session_id)
             
             def text_extraction_progress_callback(progress):
                 try:
@@ -412,7 +412,7 @@ def process_direct_upload_pipeline(session_id):
                         'step': 'text-extraction',
                         'progress': progress,
                         'message': message
-                    }, room=session_id)
+                    }, to=session_id)
                 except Exception as e:
                     print(f"Error in direct text extraction progress callback: {e}", flush=True)
             
@@ -445,7 +445,7 @@ def process_direct_upload_pipeline(session_id):
                 'merged_file_url': url_for('download_file', session_id=session_id),
                 'message': 'PDF processed successfully! Ready for AI summarization.',
                 'direct_upload_mode': True
-            }, room=session_id)
+            }, to=session_id)
             print(f"=== DIRECT UPLOAD PIPELINE COMPLETED for session {session_id} ===", flush=True)
         
     except Exception as e:
@@ -460,7 +460,7 @@ def process_direct_upload_pipeline(session_id):
             socketio.emit('processing_error', {
                 'session_id': session_id,
                 'error': str(e)
-            }, room=session_id)
+            }, to=session_id)
         except Exception as emit_error:
             print(f"Error emitting error message: {emit_error}", flush=True)
 
@@ -483,7 +483,7 @@ def update_progress(session_id, step, progress, message=None):
             
             # Send progress update with correct Flask-SocketIO syntax
             print(f"Emitting progress update: {progress_data}")
-            socketio.emit('progress_update', progress_data, room=session_id)
+            socketio.emit('progress_update', progress_data, to=session_id)
 
 @app.route('/download/<session_id>')
 def download_file(session_id):
@@ -504,7 +504,8 @@ def summarize_document(session_id):
     if session_id not in processing_sessions:
         return jsonify({'error': 'Invalid session ID'}), 404
     
-    data = request.get_json()
+    # Be tolerant to missing/invalid JSON
+    data = request.get_json(silent=True) or {}
     custom_prompt = data.get('prompt', '')
     
     try:
@@ -513,7 +514,7 @@ def summarize_document(session_id):
             'step': 'summarization',
             'progress': 0,
             'message': 'Generating AI summary...'
-        }, room=session_id)
+        }, to=session_id)
         
         summary = rag_system.generate_summary(session_id, custom_prompt,
                                             progress_callback=lambda p: update_progress(session_id, 'summarization', p))
@@ -521,39 +522,77 @@ def summarize_document(session_id):
         socketio.emit('summary_complete', {
             'session_id': session_id,
             'summary': summary
-        }, room=session_id)
+        }, to=session_id)
         
         return jsonify({'success': True, 'summary': summary})
         
     except Exception as e:
+        # Inform UI about the failure as well
+        try:
+            socketio.emit('summary_error', {
+                'session_id': session_id,
+                'error': str(e)
+            }, to=session_id)
+        except Exception:
+            pass
         return jsonify({'error': str(e)}), 500
 
 @app.route('/generate-voiceover/<session_id>', methods=['POST'])
 def generate_voiceover(session_id):
-    """Generate AI voiceover from text"""
+    """Generate AI voiceover from text. Accepts JSON or multipart form-data with optional background image for MP4."""
+    # Helper to parse payload (JSON or multipart)
+    def parse_payload():
+        content_type = request.content_type or ''
+        if 'multipart/form-data' in content_type:
+            form = request.form
+            files = request.files
+            return {
+                'text': form.get('text', ''),
+                'voice': form.get('voice', 'nova'),
+                'speed': float(form.get('speed', 1.0)),
+                'format': form.get('format', 'mp3'),
+                'background_file': files.get('backgroundImage') if files else None
+            }
+        else:
+            data = request.get_json(silent=True) or {}
+            return {
+                'text': data.get('text', ''),
+                'voice': data.get('voice', 'nova'),
+                'speed': float(data.get('speed', 1.0)),
+                'format': data.get('format', 'mp3'),
+                'background_file': None
+            }
+
+    payload = parse_payload()
+
     # Handle standalone voiceover requests (no session required)
     if session_id == 'standalone':
-        data = request.get_json()
-        text = data.get('text', '')
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
-        format = data.get('format', 'mp3')
+        text = payload['text']
+        voice = payload['voice']
+        speed = payload['speed']
+        format = payload['format']
+        bg_file = payload['background_file']
         
-        if not text.strip():
+        if not text or not text.strip():
             return jsonify({'error': 'No text provided for voiceover generation'}), 400
         
+        temp_bg_path = None
         try:
-            print(f"Generating standalone voiceover")
-            print(f"Text length: {len(text)} characters")
-            print(f"Voice: {voice}, Speed: {speed}, Format: {format}")
+            # Persist background image to temp if provided
+            if bg_file and getattr(bg_file, 'filename', ''):
+                os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
+                bg_name = secure_filename(bg_file.filename)
+                temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
+                bg_file.save(temp_bg_path)
             
-            # Generate voiceover using the voiceover system without session ID
+            print(f"Generating standalone voiceover (format={format}, voice={voice}, speed={speed})")
             result = voiceover_system.generate_speech(
                 text=text,
                 voice=voice,
                 speed=speed,
                 format=format,
-                session_id=None  # No session for standalone
+                session_id=None,
+                background_image_path=temp_bg_path
             )
             
             if result['success']:
@@ -565,36 +604,46 @@ def generate_voiceover(session_id):
                 })
             else:
                 return jsonify({'error': 'Failed to generate voiceover'}), 500
-                
         except Exception as e:
             print(f"Error generating standalone voiceover: {str(e)}")
             return jsonify({'error': str(e)}), 500
+        finally:
+            # Cleanup temp bg file
+            if temp_bg_path and os.path.exists(temp_bg_path):
+                try:
+                    os.remove(temp_bg_path)
+                except Exception:
+                    pass
     
-    # Handle session-based voiceover requests (original functionality)
+    # Handle session-based voiceover requests
     if session_id not in processing_sessions:
         return jsonify({'error': 'Invalid session ID'}), 404
     
-    data = request.get_json()
-    text = data.get('text', '')
-    voice = data.get('voice', 'nova')
-    speed = float(data.get('speed', 1.0))
-    format = data.get('format', 'mp3')
-    
-    if not text.strip():
+    text = payload['text']
+    voice = payload['voice']
+    speed = payload['speed']
+    format = payload['format']
+    bg_file = payload['background_file']
+
+    if not text or not text.strip():
         return jsonify({'error': 'No text provided for voiceover generation'}), 400
-    
+
+    temp_bg_path = None
     try:
-        print(f"Generating voiceover for session {session_id}")
-        print(f"Text length: {len(text)} characters")
-        print(f"Voice: {voice}, Speed: {speed}, Format: {format}")
+        if bg_file and getattr(bg_file, 'filename', ''):
+            os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
+            bg_name = secure_filename(bg_file.filename)
+            temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
+            bg_file.save(temp_bg_path)
         
-        # Generate voiceover using the voiceover system
+        print(f"Generating voiceover for session {session_id} (format={format}, voice={voice}, speed={speed})")
         result = voiceover_system.generate_speech(
             text=text,
             voice=voice,
             speed=speed,
             format=format,
-            session_id=session_id
+            session_id=session_id,
+            background_image_path=temp_bg_path
         )
         
         if result['success']:
@@ -606,14 +655,19 @@ def generate_voiceover(session_id):
             })
         else:
             return jsonify({'error': 'Failed to generate voiceover'}), 500
-            
     except Exception as e:
         print(f"Error generating voiceover: {str(e)}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        if temp_bg_path and os.path.exists(temp_bg_path):
+            try:
+                os.remove(temp_bg_path)
+            except Exception:
+                pass
 
 @app.route('/download-voiceover/<filename>')
 def download_voiceover(filename):
-    """Download generated voiceover file"""
+    """Download or stream generated voiceover file. Inline by default; force download with ?dl=1"""
     try:
         voiceover_folder = voiceover_system.output_folder
         file_path = os.path.join(voiceover_folder, filename)
@@ -633,10 +687,12 @@ def download_voiceover(filename):
         elif filename.endswith('.mp4'):
             mimetype = 'video/mp4'
         
+        # Determine disposition
+        dl = request.args.get('dl', '').lower() in ('1', 'true', 'yes')
         return send_file(
             file_path,
-            as_attachment=True,
-            download_name=filename,
+            as_attachment=dl,
+            download_name=filename if dl else None,
             mimetype=mimetype
         )
         
@@ -656,6 +712,33 @@ def get_status(session_id):
         'progress': session['progress'],
         'filename': session['filename']
     })
+
+@app.route('/vector-stats/<session_id>')
+def vector_stats(session_id):
+    """Get vector DB stats for a session"""
+    if session_id not in processing_sessions:
+        return jsonify({'error': 'Invalid session ID'}), 404
+    try:
+        stats = rag_system.get_document_stats(session_id)
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/search/<session_id>', methods=['POST'])
+def search_documents(session_id):
+    """Semantic search within a processed document"""
+    if session_id not in processing_sessions:
+        return jsonify({'error': 'Invalid session ID'}), 404
+    data = request.get_json(silent=True) or {}
+    query = data.get('query', '')
+    n = int(data.get('n', 5))
+    if not query.strip():
+        return jsonify({'error': 'Query is required'}), 400
+    try:
+        results = rag_system.search_documents(session_id, query, max_results=n)
+        return jsonify({'results': results})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @socketio.on('connect')
 def handle_connect():
@@ -683,17 +766,25 @@ def handle_leave_session(data):
     if session_id:
         leave_room(session_id)
         print(f'Client left session room: {session_id}')
+        emit('session_left', {'session_id': session_id})
+
 
 if __name__ == '__main__':
-    # Create necessary directories
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
-    os.makedirs(app.config['PROCESSED_FOLDER'], exist_ok=True)
-    
-    # Get host and port from environment
-    host = os.getenv('FLASK_HOST', '0.0.0.0')
-    port = int(os.getenv('FLASK_PORT', 5000))
-    debug = os.getenv('FLASK_DEBUG', 'true').lower() == 'true'
-    
-    # Run the application
-    socketio.run(app, debug=debug, host=host, port=port)
+    # Ensure required folders exist
+    try:
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
+        os.makedirs(app.config['PROCESSED_FOLDER'], exist_ok=True)
+        # Voiceover folder is managed by VoiceoverSystem, but create if env provided
+        voiceover_folder = os.getenv('VOICEOVER_FOLDER')
+        if voiceover_folder:
+            os.makedirs(voiceover_folder, exist_ok=True)
+    except Exception as e:
+        print(f"Error ensuring folders exist: {e}")
+
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', 5000))
+    debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+
+    # Run the Socket.IO server
+    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
