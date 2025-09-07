@@ -1,6 +1,6 @@
 import os
 import uuid
-from flask import Flask, render_template, request, jsonify, send_file, url_for
+from flask import Flask, render_template, request, jsonify, send_file, url_for, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.utils import secure_filename
 import threading
@@ -9,6 +9,8 @@ from rag_system import RAGSystem
 from voiceover_system import VoiceoverSystem
 from dotenv import load_dotenv
 import json
+import zipfile
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -22,7 +24,8 @@ app.config['TEMP_FOLDER'] = os.getenv('TEMP_FOLDER', 'temp')
 app.config['PROCESSED_FOLDER'] = os.getenv('PROCESSED_FOLDER', 'processed')
 
 # Configure Flask URL generation for background threads
-app.config['SERVER_NAME'] = os.getenv('SERVER_NAME', 'localhost:5000')
+# Comment out SERVER_NAME as it can cause routing issues
+# app.config['SERVER_NAME'] = os.getenv('SERVER_NAME', 'localhost:5000')
 app.config['APPLICATION_ROOT'] = os.getenv('APPLICATION_ROOT', '/')
 app.config['PREFERRED_URL_SCHEME'] = os.getenv('PREFERRED_URL_SCHEME', 'http')
 
@@ -537,137 +540,75 @@ def summarize_document(session_id):
             pass
         return jsonify({'error': str(e)}), 500
 
-@app.route('/generate-voiceover/<session_id>', methods=['POST'])
-def generate_voiceover(session_id):
-    """Generate AI voiceover from text. Accepts JSON or multipart form-data with optional background image for MP4."""
-    # Helper to parse payload (JSON or multipart)
-    def parse_payload():
-        content_type = request.content_type or ''
-        if 'multipart/form-data' in content_type:
-            form = request.form
-            files = request.files
-            return {
-                'text': form.get('text', ''),
-                'voice': form.get('voice', 'nova'),
-                'speed': float(form.get('speed', 1.0)),
-                'format': form.get('format', 'mp3'),
-                'background_file': files.get('backgroundImage') if files else None
-            }
-        else:
-            data = request.get_json(silent=True) or {}
-            return {
-                'text': data.get('text', ''),
-                'voice': data.get('voice', 'nova'),
-                'speed': float(data.get('speed', 1.0)),
-                'format': data.get('format', 'mp3'),
-                'background_file': None
-            }
-
-    payload = parse_payload()
-
-    # Handle standalone voiceover requests (no session required)
-    if session_id == 'standalone':
-        text = payload['text']
-        voice = payload['voice']
-        speed = payload['speed']
-        format = payload['format']
-        bg_file = payload['background_file']
-        
-        if not text or not text.strip():
-            return jsonify({'error': 'No text provided for voiceover generation'}), 400
-        
-        temp_bg_path = None
-        try:
-            # Persist background image to temp if provided
-            if bg_file and getattr(bg_file, 'filename', ''):
-                os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
-                bg_name = secure_filename(bg_file.filename)
-                temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
-                bg_file.save(temp_bg_path)
-            
-            print(f"Generating standalone voiceover (format={format}, voice={voice}, speed={speed})")
-            result = voiceover_system.generate_speech(
-                text=text,
-                voice=voice,
-                speed=speed,
-                format=format,
-                session_id=None,
-                background_image_path=temp_bg_path
-            )
-            
-            if result['success']:
-                return jsonify({
-                    'success': True,
-                    'file_url': result['file_url'],
-                    'format': result['format'],
-                    'duration': result.get('duration', 0)
-                })
-            else:
-                return jsonify({'error': 'Failed to generate voiceover'}), 500
-        except Exception as e:
-            print(f"Error generating standalone voiceover: {str(e)}")
-            return jsonify({'error': str(e)}), 500
-        finally:
-            # Cleanup temp bg file
-            if temp_bg_path and os.path.exists(temp_bg_path):
-                try:
-                    os.remove(temp_bg_path)
-                except Exception:
-                    pass
-    
-    # Handle session-based voiceover requests
-    if session_id not in processing_sessions:
-        return jsonify({'error': 'Invalid session ID'}), 404
-    
-    text = payload['text']
-    voice = payload['voice']
-    speed = payload['speed']
-    format = payload['format']
-    bg_file = payload['background_file']
-
-    if not text or not text.strip():
-        return jsonify({'error': 'No text provided for voiceover generation'}), 400
-
-    temp_bg_path = None
+@app.route('/generate-voiceover', methods=['POST'])
+def generate_voiceover():
     try:
-        if bg_file and getattr(bg_file, 'filename', ''):
-            os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
-            bg_name = secure_filename(bg_file.filename)
-            temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
-            bg_file.save(temp_bg_path)
+        data = request.get_json()
+        text = data.get('text', '').strip()
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        format_type = data.get('format', 'mp3')
+        background_image = data.get('background_image', '')
         
-        print(f"Generating voiceover for session {session_id} (format={format}, voice={voice}, speed={speed})")
+        if not text:
+            return jsonify({'success': False, 'error': 'No text provided'})
+        
+        # Generate voiceover
         result = voiceover_system.generate_speech(
             text=text,
             voice=voice,
             speed=speed,
-            format=format,
-            session_id=session_id,
-            background_image_path=temp_bg_path
+            format=format_type,
+            session_id=session.get('session_id'),
+            background_image_path=background_image if background_image else None
         )
         
-        if result['success']:
-            return jsonify({
-                'success': True,
-                'file_url': result['file_url'],
-                'format': result['format'],
-                'duration': result.get('duration', 0)
-            })
-        else:
-            return jsonify({'error': 'Failed to generate voiceover'}), 500
+        return jsonify(result)
+        
     except Exception as e:
         print(f"Error generating voiceover: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/generate-voiceover/standalone', methods=['POST'])
+def generate_voiceover_standalone():
+    """Standalone voiceover generation endpoint for direct text-to-speech conversion"""
+    try:
+        data = request.get_json()
+        text = data.get('text', '').strip()
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        format_type = data.get('format', 'mp3')
+        
+        if not text:
+            return jsonify({'error': 'No text provided'}), 400
+        
+        # Generate voiceover using the voiceover system
+        result = voiceover_system.generate_speech(
+            text=text,
+            voice=voice,
+            speed=speed,
+            format=format_type,
+            session_id=None,  # No session needed for standalone
+            background_image_path=None
+        )
+        
+        if result.get('success'):
+            return jsonify({
+                'file_url': result.get('file_url'),
+                'format': result.get('format'),
+                'duration': result.get('duration'),
+                'file_path': result.get('file_path')
+            })
+        else:
+            return jsonify({'error': result.get('error', 'Failed to generate voiceover')}), 500
+        
+    except Exception as e:
+        print(f"Error generating standalone voiceover: {str(e)}")
         return jsonify({'error': str(e)}), 500
-    finally:
-        if temp_bg_path and os.path.exists(temp_bg_path):
-            try:
-                os.remove(temp_bg_path)
-            except Exception:
-                pass
 
 @app.route('/download-voiceover/<filename>')
 def download_voiceover(filename):
-    """Download or stream generated voiceover file. Inline by default; force download with ?dl=1"""
+    """Download or stream generated voiceover file. Inline by default; force download with ?dl=1. Optional ?name=Custom Title to set download filename (first line of script)."""
     try:
         voiceover_folder = voiceover_system.output_folder
         file_path = os.path.join(voiceover_folder, filename)
@@ -675,10 +616,13 @@ def download_voiceover(filename):
         if not os.path.exists(file_path):
             return jsonify({'error': 'File not found'}), 404
         
-        # Get file info
-        file_info = voiceover_system.get_file_info(filename)
-        if not file_info:
-            return jsonify({'error': 'File information not available'}), 404
+        # Get file info (basic file stats since get_file_info method doesn't exist)
+        file_stat = os.stat(file_path)
+        file_info = {
+            'filename': filename,
+            'size': file_stat.st_size,
+            'modified': file_stat.st_mtime
+        }
         
         # Determine mimetype based on format
         mimetype = 'audio/mpeg'  # Default for MP3
@@ -686,13 +630,24 @@ def download_voiceover(filename):
             mimetype = 'audio/wav'
         elif filename.endswith('.mp4'):
             mimetype = 'video/mp4'
+        elif filename.endswith('.zip'):
+            mimetype = 'application/zip'
         
-        # Determine disposition
+        # Determine disposition and download name
         dl = request.args.get('dl', '').lower() in ('1', 'true', 'yes')
+        suggested_name = None
+        if dl:
+            base = request.args.get('name', '')
+            base = secure_filename(base) if base else os.path.splitext(filename)[0]
+            if not base:
+                base = 'voiceover'
+            ext = os.path.splitext(filename)[1]
+            suggested_name = f"{base}{ext}"
+        
         return send_file(
             file_path,
             as_attachment=dl,
-            download_name=filename if dl else None,
+            download_name=suggested_name,
             mimetype=mimetype
         )
         
@@ -737,6 +692,310 @@ def search_documents(session_id):
     try:
         results = rag_system.search_documents(session_id, query, max_results=n)
         return jsonify({'results': results})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/generate-shorts', methods=['POST'])
+def generate_shorts():
+    """Generate multiple portrait MP4 voiceover videos from a single script using pause markers."""
+    # Parse JSON or multipart
+    def parse_payload():
+        content_type = request.content_type or ''
+        if 'multipart/form-data' in content_type:
+            form = request.form
+            files = request.files
+            return {
+                'script': form.get('script', ''),
+                'voice': form.get('voice', 'nova'),
+                'speed': float(form.get('speed', 1.0)),
+                'background_file': files.get('backgroundImage') if files else None
+            }
+        else:
+            data = request.get_json(silent=True) or {}
+            return {
+                'script': data.get('script', ''),
+                'voice': data.get('voice', 'nova'),
+                'speed': float(data.get('speed', 1.0)),
+                'background_file': None
+            }
+
+    payload = parse_payload()
+    script = (payload['script'] or '').strip()
+    if not script:
+        return jsonify({'error': 'Script is required'}), 400
+
+    voice = payload['voice']
+    speed = payload['speed']
+    bg_file = payload['background_file']
+
+    temp_bg_path = None
+    try:
+        if bg_file and getattr(bg_file, 'filename', ''):
+            os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
+            bg_name = secure_filename(bg_file.filename)
+            temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
+            bg_file.save(temp_bg_path)
+
+        # Split the script by pause markers into shorts segments
+        def split_into_scripts(script_text):
+            """Split script into segments using pause markers like [PAUSE] or line breaks"""
+            # Split by [PAUSE] markers first
+            segments = []
+            if '— pause —' in script_text:
+                parts = script_text.split('— pause —')
+            else:
+                # Fallback to splitting by double line breaks
+                parts = script_text.split('\n\n')
+            
+            for part in parts:
+                cleaned = part.strip()
+                if cleaned:
+                    segments.append(cleaned)
+            
+            return segments
+        
+        segments = split_into_scripts(script)
+        if not segments:
+            return jsonify({'error': 'No segments found in script'}), 400
+
+        # Generate a portrait MP4 for each segment
+        outputs = []
+        file_paths = []  # list of tuples (idx, path, title)
+        for idx, seg in enumerate(segments, start=1):
+            res = voiceover_system.generate_speech(
+                text=seg,
+                voice=voice,
+                speed=speed,
+                format='mp4',
+                session_id=None,
+                background_image_path=temp_bg_path
+            )
+            if not res.get('success'):
+                raise Exception(f"Failed to generate segment {idx}")
+
+            # Capture the suggested download title for consistent naming
+            seg_title = res.get('download_title') or f"short_{idx:02d}"
+            outputs.append({
+                'index': idx,
+                'file_url': res['file_url'],
+                'duration': res.get('duration'),
+                'format': res.get('format', 'mp4'),
+                # Optional: echo the actual download name used for individual downloads
+                'download_name': seg_title + '.mp4'
+            })
+            # Keep actual file path and title for zipping
+            fp = res.get('file_path')
+            if fp and os.path.exists(fp):
+                file_paths.append((idx, fp, seg_title))
+
+        # Create a zip with all generated MP4s for one-click download
+        os.makedirs(voiceover_system.output_folder, exist_ok=True)
+        zip_name = f"shorts_{uuid.uuid4()}.zip"
+        zip_path = os.path.join(voiceover_system.output_folder, zip_name)
+        used_names = set()
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for idx, fp, title in file_paths:
+                # Sanitize and ensure uniqueness; match individual download naming
+                base = secure_filename(title) or f"short_{idx:02d}"
+                # Remove any trailing extension from base if present
+                if base.lower().endswith('.mp4'):
+                    base = base[:-4]
+                candidate = f"{base}.mp4"
+                suffix = 2
+                while candidate in used_names:
+                    candidate = f"{base}-{suffix}.mp4"
+                    suffix += 1
+                used_names.add(candidate)
+                try:
+                    zf.write(fp, candidate)
+                except Exception:
+                    pass
+        # Build a friendly suggested name with date
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        zip_url = f"/download-voiceover/{zip_name}?dl=1&name=youtube_shorts_{today_str}"
+
+        return jsonify({'success': True, 'count': len(outputs), 'items': outputs, 'zip_url': zip_url})
+    except Exception as e:
+        print(f"Error generating shorts: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if temp_bg_path and os.path.exists(temp_bg_path):
+            try:
+                os.remove(temp_bg_path)
+            except Exception:
+                pass
+
+@app.route('/voices', methods=['GET'])
+def list_voices():
+    """List available TTS voices and supported output formats."""
+    try:
+        # Return default provider info since get_available_providers method doesn't exist
+        providers = [('OpenAI TTS', [
+            {'name': 'alloy', 'language': 'en-US'},
+            {'name': 'echo', 'language': 'en-US'},
+            {'name': 'fable', 'language': 'en-US'},
+            {'name': 'onyx', 'language': 'en-US'},
+            {'name': 'nova', 'language': 'en-US'},
+            {'name': 'shimmer', 'language': 'en-US'}
+        ])]
+        
+        # Format response with provider information
+        response_data = {
+            'success': True,
+            'providers': [],
+            'formats': getattr(voiceover_system, 'supported_formats', ['mp3', 'wav', 'mp4'])
+        }
+        
+        for provider_name, voices in providers:
+            provider_info = {
+                'name': provider_name,
+                'voices': voices
+            }
+            response_data['providers'].append(provider_info)
+        
+        return jsonify(response_data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/tts-providers', methods=['GET'])
+def list_tts_providers():
+    """Get detailed information about available TTS providers."""
+    try:
+        # Return default provider info since get_available_providers method doesn't exist
+        providers = [('OpenAI TTS', [
+            {'name': 'alloy', 'language': 'en-US'},
+            {'name': 'echo', 'language': 'en-US'},
+            {'name': 'fable', 'language': 'en-US'},
+            {'name': 'onyx', 'language': 'en-US'},
+            {'name': 'nova', 'language': 'en-US'},
+            {'name': 'shimmer', 'language': 'en-US'}
+        ])]
+        
+        provider_details = []
+        for provider_name, voices in providers:
+            # Count voices by language
+            languages = {}
+            for voice in voices:
+                lang = voice.get('language', 'unknown')
+                if lang not in languages:
+                    languages[lang] = 0
+                languages[lang] += 1
+            
+            provider_info = {
+                'name': provider_name,
+                'voice_count': len(voices),
+                'languages': languages,
+                'is_open_source': 'OpenAI' not in provider_name,
+                'cost': 'Free' if 'OpenAI' not in provider_name else 'Paid',
+                'quality': 'High' if provider_name in ['Coqui TTS (Open Source)', 'OpenAI TTS'] else 'Good',
+                'indian_english_support': any('en-IN' in voice.get('language', '') or 'Indian' in voice.get('name', '') for voice in voices),
+                'voices': voices
+            }
+            provider_details.append(provider_info)
+        
+        return jsonify({
+            'success': True,
+            'providers': provider_details,
+            'total_providers': len(provider_details),
+            'open_source_available': any(p['is_open_source'] for p in provider_details)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/voiceovers', methods=['GET'])
+def list_voiceovers():
+    """List generated voiceover files with basic metadata.
+    Query params:
+      - page (int, default 1)
+      - per_page (int, default 50)
+      - sort ("asc"|"desc", default "desc" by modified time)
+    """
+    try:
+        base = voiceover_system.output_folder
+        os.makedirs(base, exist_ok=True)
+        allowed_exts = {'.mp3', '.wav', '.mp4', '.zip', '.srt'}
+        items = []
+        for name in os.listdir(base):
+            if not name or name.startswith('.'):
+                continue
+            path = os.path.join(base, name)
+            if not os.path.isfile(path):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in allowed_exts:
+                continue
+            stat = os.stat(path)
+            info = {
+                'filename': name,
+                'bytes': stat.st_size,
+                'mtime': int(stat.st_mtime),
+            }
+            # Duration (best-effort) - skip since get_file_info method doesn't exist
+            # Could be implemented if VoiceoverSystem adds this method in the future
+            try:
+                # vinfo = voiceover_system.get_file_info(path)
+                # info['duration'] = vinfo['duration']
+                pass
+            except Exception:
+                pass
+            # Attach sidecar subtitle URL for mp4
+            if ext == '.mp4':
+                srt_name = os.path.splitext(name)[0] + '.srt'
+                srt_path = os.path.join(base, srt_name)
+                if os.path.exists(srt_path):
+                    info['subtitle'] = srt_name
+                    info['subtitle_url'] = f"/download-voiceover/{srt_name}?dl=1"
+            items.append(info)
+        sort = (request.args.get('sort', 'desc') or 'desc').lower()
+        items.sort(key=lambda x: x.get('mtime', 0), reverse=(sort != 'asc'))
+        page = max(1, int(request.args.get('page', 1) or 1))
+        per_page = min(200, max(1, int(request.args.get('per_page', 50) or 50)))
+        start = (page - 1) * per_page
+        sliced = items[start:start + per_page]
+        return jsonify({
+            'success': True,
+            'total': len(items),
+            'page': page,
+            'per_page': per_page,
+            'items': sliced
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/voiceovers/<path:filename>', methods=['DELETE'])
+def delete_voiceover(filename):
+    """Delete a generated voiceover file by filename.
+    Optional query params:
+      - delete_subtitles (1|0, default 1): also delete matching .srt sidecar
+    """
+    try:
+        # Normalize and ensure path is inside the voiceover folder
+        base = os.path.abspath(voiceover_system.output_folder)
+        os.makedirs(base, exist_ok=True)
+        safe_name = os.path.basename(filename)
+        target = os.path.abspath(os.path.join(base, safe_name))
+        if not target.startswith(base + os.sep):
+            return jsonify({'error': 'Invalid filename'}), 400
+        if not os.path.exists(target) or not os.path.isfile(target):
+            return jsonify({'error': 'File not found'}), 404
+        # Delete file
+        try:
+            os.remove(target)
+        except Exception as e:
+            return jsonify({'error': f'Failed to delete file: {str(e)}'}), 500
+        deleted = [safe_name]
+        # Optionally delete sidecar .srt with same basename
+        delete_srt = (request.args.get('delete_subtitles', '1').lower() in ('1', 'true', 'yes'))
+        root, ext = os.path.splitext(safe_name)
+        if delete_srt:
+            srt_path = os.path.join(base, root + '.srt')
+            if os.path.exists(srt_path):
+                try:
+                    os.remove(os.path.abspath(srt_path))
+                    deleted.append(os.path.basename(srt_path))
+                except Exception:
+                    pass
+        return jsonify({'success': True, 'deleted': deleted})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

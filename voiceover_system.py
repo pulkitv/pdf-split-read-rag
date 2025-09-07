@@ -14,7 +14,7 @@ class VoiceoverSystem:
     def __init__(self):
         # Initialize OpenAI client for Text-to-Speech
         api_key = os.getenv('OPENAI_API_KEY')
-        if (api_key):
+        if api_key:
             self.openai_client = OpenAI(api_key=api_key)
         else:
             self.openai_client = None
@@ -31,39 +31,31 @@ class VoiceoverSystem:
         self.video_width = int(os.getenv('VIDEO_WIDTH', 1920))
         self.video_height = int(os.getenv('VIDEO_HEIGHT', 1080))
         self.video_fps = int(os.getenv('VIDEO_FPS', 30))
-        # New: Optional text overlay on waveform videos
+        # Text overlay settings
         self.text_overlay_enabled = os.getenv('VOICEOVER_TEXT_OVERLAY', 'true').lower() == 'true'
         self.text_overlay_font_path = os.getenv('VOICEOVER_FONT_PATH', '')
         self.text_overlay_max_chars = int(os.getenv('VOICEOVER_TEXT_OVERLAY_MAX_CHARS', 120))
-        # New: explicit font size and side margin for on-video captions
-        self.text_overlay_fontsize_px = int(os.getenv('VOICEOVER_OVERLAY_FONTSIZE', 24))
+        self.text_overlay_fontsize_px = int(os.getenv('VOICEOVER_OVERLAY_FONTSIZE', 64))
         self.text_overlay_side_margin_px = int(os.getenv('VOICEOVER_TEXT_MARGIN', max(40, int(self.video_width * 0.05))))
         
         # TTS request constraints
-        self.max_input_chars = int(os.getenv('VOICEOVER_MAX_INPUT_CHARS', 3900))  # keep under API 4096
-        self.pause_marker_primary = '— pause —'  # em-dash separators from UI
+        self.max_input_chars = int(os.getenv('VOICEOVER_MAX_INPUT_CHARS', 3900))
+        self.pause_marker_primary = '— pause —'
         self.pause_marker_fallback = '-- pause --'
-        self.pause_silence_seconds = float(os.getenv('VOICEOVER_PAUSE_SECONDS', 0.6))
+        self.pause_silence_seconds = float(os.getenv('VOICEOVER_PAUSE_SECONDS', 0))
         
     def generate_speech(self, text, voice='nova', speed=1.0, format='mp3', session_id=None, background_image_path=None):
-        """Generate speech from text using OpenAI TTS. If format is mp4 and background_image_path is provided, create a video using the image.
-        Now supports auto-chunking for long scripts and concatenation.
-        Adds dynamic on-video captions that sync to speech segments.
-        """
-        # Generate unique file base
+        """Generate speech from text using OpenAI TTS with auto-chunking for long scripts."""
         file_id = str(uuid.uuid4())
         if session_id:
             file_id = f"{session_id}_{file_id}"
         work_dir = tempfile.mkdtemp(prefix="voiceover_")
         segments = self._split_text_for_tts(text, self.max_input_chars)
 
-        # Helper: finalize to desired output from an MP3 and optional captions
         def finalize_output_from_mp3(source_mp3_path: str, captions=None):
             if format == 'mp4':
                 video_path = self._create_video_with_audio(
-                    source_mp3_path,
-                    file_id,
-                    text,
+                    source_mp3_path, file_id, text,
                     background_image_path=background_image_path,
                     captions=captions,
                 )
@@ -82,7 +74,7 @@ class VoiceoverSystem:
                 return final_mp3, 'mp3'
 
         try:
-            # Single segment -> synthesize once and build captions by sentence
+            # Single segment processing
             if len(segments) == 1 and segments[0]['type'] == 'text':
                 temp_mp3 = os.path.join(work_dir, f"{file_id}.mp3")
                 self._tts_request_to_file(segments[0]['content'], voice=voice, speed=speed, out_path=temp_mp3)
@@ -98,8 +90,8 @@ class VoiceoverSystem:
                     'duration': self._get_audio_duration(final_path)
                 }
 
-            # Multi-segment synthesis -> produce MP3 segments including silence; capture timings per segment
-            parts = []  # list of {type: 'text'|'pause', 'path': str, 'text'?: str, 'duration': float}
+            # Multi-segment processing
+            parts = []
             for seg in segments:
                 if seg['type'] == 'pause':
                     silence_mp3 = os.path.join(work_dir, f"silence_{len(parts)}.mp3")
@@ -110,21 +102,31 @@ class VoiceoverSystem:
                     self._tts_request_to_file(seg['content'], voice=voice, speed=speed, out_path=seg_mp3)
                     parts.append({'type': 'text', 'path': seg_mp3, 'text': seg['content'], 'duration': None})
 
-            # Compute durations and captions
+            # Compute durations and build captions
             for p in parts:
                 p['duration'] = self._get_audio_duration(p['path'])
+            
             captions = []
-            t = 0.0
+            current_time = 0.0
+            
             for p in parts:
                 if p['type'] == 'pause':
-                    t += p['duration']
+                    current_time += p['duration']
                 else:
-                    start = t
-                    end = t + p['duration']
-                    captions.append({'text': p['text'], 'start': start, 'end': end})
-                    t = end
+                    segment_start = current_time
+                    segment_end = current_time + p['duration']
+                    segment_captions = self._make_captions_from_text(p['text'], p['duration'])
+                    
+                    for seg_cap in segment_captions:
+                        captions.append({
+                            'text': seg_cap['text'],
+                            'start': segment_start + seg_cap['start'],
+                            'end': segment_start + seg_cap['end']
+                        })
+                    
+                    current_time = segment_end
 
-            # Concatenate MP3 parts
+            # Concatenate audio parts
             joined_mp3 = os.path.join(work_dir, f"{file_id}_joined.mp3")
             self._concat_audio_files([p['path'] for p in parts], joined_mp3, target_format='mp3')
 
@@ -143,15 +145,13 @@ class VoiceoverSystem:
             raise Exception(f"Failed to generate voiceover: {str(e)}")
 
     def _tts_request_to_file(self, text, voice, speed, out_path):
-        """Issue a TTS request to OpenAI and write MP3 bytes to out_path.
-        Supports both newer clients with streaming API and older clients without it.
-        """
+        """Issue a TTS request to OpenAI and write MP3 bytes to out_path."""
         client = self.openai_client
         if client is None:
             raise Exception("OpenAI client not configured. Please set OPENAI_API_KEY environment variable.")
 
-        # Prefer streaming API if available
         try:
+            # Try streaming API first
             ws = getattr(getattr(client, 'audio').speech, 'with_streaming_response', None)
             if ws is not None:
                 try:
@@ -164,16 +164,13 @@ class VoiceoverSystem:
                         response.stream_to_file(out_path)
                         return
                 except AttributeError:
-                    # Older client without streaming support
                     pass
                 except Exception as e:
-                    # Fallback to non-streaming on any runtime streaming failure
                     print(f"TTS streaming failed, falling back to non-streaming: {e}")
         except Exception:
-            # If feature detection above fails, fall back to non-streaming path
             pass
 
-        # Non-streaming fallback compatible with older SDKs
+        # Non-streaming fallback
         resp = client.audio.speech.create(
             model="tts-1-hd",
             voice=voice,
@@ -181,20 +178,17 @@ class VoiceoverSystem:
             speed=speed,
         )
 
-        # Try common response shapes
-        # 1) Object exposes stream_to_file
         if hasattr(resp, 'stream_to_file') and callable(getattr(resp, 'stream_to_file')):
             resp.stream_to_file(out_path)
             return
 
-        # 2) Bytes content attribute
+        # Handle different response formats
         content = None
         try:
             content = getattr(resp, 'content', None)
         except Exception:
             content = None
 
-        # 3) Raw bytes-like or file-like
         if content is None:
             try:
                 if isinstance(resp, (bytes, bytearray)):
@@ -209,34 +203,28 @@ class VoiceoverSystem:
             except Exception:
                 pass
 
-        # 4) body/data fallback
         if content is None:
             body = getattr(resp, 'body', None) or getattr(resp, 'data', None)
             if isinstance(body, (bytes, bytearray)):
                 content = body
 
         if content is None:
-            raise Exception("Unsupported OpenAI TTS response shape for installed 'openai' package. Consider upgrading the 'openai' dependency.")
+            raise Exception("Unsupported OpenAI TTS response shape for installed 'openai' package.")
 
         with open(out_path, 'wb') as f:
             f.write(content)
     
     def _split_text_for_tts(self, text: str, max_chars: int):
-        """Split text into a list of segments under max_chars.
-        Returns a list of dicts with {'type': 'text'|'pause', 'content'?: str}.
-        Respects explicit pause markers and prefers paragraph/sentence boundaries.
-        """
+        """Split text into segments under max_chars, respecting pause markers."""
         if not text:
             return [{'type': 'text', 'content': ''}]
         
-        # Normalize line endings and trim
         t = text.replace('\r\n', '\n').strip()
         
-        # Split on explicit pause markers, preserving them
+        # Split on pause markers
         parts = []
         idx = 0
         while idx < len(t):
-            # Find next marker
             next_primary = t.find(self.pause_marker_primary, idx)
             next_fallback = t.find(self.pause_marker_fallback, idx)
             candidates = [i for i in [next_primary, next_fallback] if i != -1]
@@ -244,31 +232,27 @@ class VoiceoverSystem:
             if next_idx == -1:
                 parts.append({'type': 'text', 'content': t[idx:]})
                 break
-            # Leading text
             if next_idx > idx:
                 parts.append({'type': 'text', 'content': t[idx:next_idx]})
-            # Add a pause token
             parts.append({'type': 'pause'})
-            # Advance past the marker
             if next_idx == next_primary:
                 idx = next_idx + len(self.pause_marker_primary)
             else:
                 idx = next_idx + len(self.pause_marker_fallback)
         
-        # Now ensure each text chunk is <= max_chars using paragraph and sentence splits
+        # Split large text chunks
         def split_chunk(chunk_text: str):
             chunk_text = (chunk_text or '').strip()
-            if not chunk_text:
-                return []
-            if len(chunk_text) <= max_chars:
-                return [chunk_text]
-            # Prefer paragraph boundaries
+            if not chunk_text or len(chunk_text) <= max_chars:
+                return [chunk_text] if chunk_text else []
+            
+            # Split by paragraphs first
             paras = [p.strip() for p in chunk_text.split('\n\n') if p.strip()]
             current = ''
             chunks = []
             for p in paras:
                 if len(p) > max_chars:
-                    # Split paragraph by sentences
+                    # Split by sentences
                     sentences = []
                     buf = ''
                     for ch in p:
@@ -278,9 +262,10 @@ class VoiceoverSystem:
                             buf = ''
                     if buf.strip():
                         sentences.append(buf.strip())
+                    
                     for s in sentences:
                         if len(s) > max_chars:
-                            # Hard wrap long sentence
+                            # Hard wrap
                             start = 0
                             while start < len(s):
                                 chunks.append(s[start:start+max_chars])
@@ -311,7 +296,7 @@ class VoiceoverSystem:
                 for sub in split_chunk(part['content']):
                     final_segments.append({'type': 'text', 'content': sub})
         
-        # Collapse leading/trailing/multiple pauses
+        # Clean up consecutive pauses
         cleaned = []
         for seg in final_segments:
             if seg['type'] == 'pause':
@@ -325,16 +310,13 @@ class VoiceoverSystem:
         return cleaned or [{'type': 'text', 'content': ''}]
     
     def _create_video_with_audio(self, audio_path, file_id, text, background_image_path=None, captions=None):
-        """Create video from audio. If background_image_path is provided, create a static-image video; otherwise, create a waveform visualization.
-        If captions are provided, burn timed subtitles that change with speech.
-        captions: list of dicts with keys {text, start, end} in seconds.
-        """
+        """Create video from audio with optional background image and captions."""
         try:
             video_filename = f"{file_id}.mp4"
             video_path = os.path.join(self.output_folder, video_filename)
             duration = self._get_audio_duration(audio_path)
 
-            # Normalize captions time range within total duration
+            # Prepare captions
             cap_list = []
             if captions:
                 for c in captions:
@@ -344,7 +326,7 @@ class VoiceoverSystem:
                         cap_list.append({'text': c['text'].strip(), 'start': s, 'end': e})
 
             if background_image_path and os.path.exists(background_image_path):
-                # Build filter graph: [img] scale/pad -> [bg] -> optional timed drawtext chain -> [vout]
+                # Static image video with optional captions
                 vf_scale_pad = (
                     f"[0:v]scale={self.video_width}:{self.video_height}:force_original_aspect_ratio=decrease,"
                     f"pad={self.video_width}:{self.video_height}:(ow-iw)/2:(oh-ih)/2:color=0x1e3c72[bg]"
@@ -357,29 +339,22 @@ class VoiceoverSystem:
                 filter_complex = ';'.join(filter_parts)
                 ffmpeg_cmd = [
                     'ffmpeg', '-y',
-                    '-loop', '1',
-                    '-i', background_image_path,  # 0:v
-                    '-i', audio_path,            # 1:a
+                    '-loop', '1', '-i', background_image_path,
+                    '-i', audio_path,
                     '-filter_complex', filter_complex,
-                    '-map', f'[{last_label}]',
-                    '-map', '1:a',
-                    '-r', str(self.video_fps),
-                    '-t', str(duration),
-                    '-c:v', 'libx264',
-                    '-pix_fmt', 'yuv420p',
-                    '-c:a', 'aac',
-                    '-shortest',
-                    video_path
+                    '-map', f'[{last_label}]', '-map', '1:a',
+                    '-r', str(self.video_fps), '-t', str(duration),
+                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+                    '-shortest', video_path
                 ]
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    print(f"Static image video generation failed, stderr: {result.stderr}")
-                    # Fallback to waveform
+                    print(f"Static image video failed: {result.stderr}")
                     temp_video = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.mp4")
                     temp_path = self._create_waveform_video(audio_path, temp_video, duration, text, captions=cap_list)
                     os.replace(temp_path, video_path)
             else:
-                # Waveform visualization to final path
+                # Waveform video
                 self._create_waveform_video(audio_path, video_path, duration, text, captions=cap_list)
 
             if not os.path.exists(video_path):
@@ -390,16 +365,14 @@ class VoiceoverSystem:
             return self._create_simple_video(audio_path, os.path.join(self.output_folder, f"{file_id}.mp4"), duration)
     
     def _create_waveform_video(self, audio_path, video_path, duration, text, captions=None):
-        """Create a video with waveform visualization and optional dynamic captions using ffmpeg."""
+        """Create waveform visualization video with optional captions."""
         try:
-            # Base: colored background + waveform overlay
             filter_parts = [
                 f"[1:a]showwaves=s={self.video_width}x{int(self.video_height*0.3)}:mode=line:colors=white@0.8[waveform]",
                 f"[0:v][waveform]overlay=(W-w)/2:(H-h)/2[bg]"
             ]
             last_label = 'bg'
 
-            # Add timed captions if provided
             if captions:
                 timed_chain, last_label = self._build_timed_drawtext_chain(last_label, captions)
                 filter_parts.append(timed_chain)
@@ -407,92 +380,74 @@ class VoiceoverSystem:
             filter_complex = ';'.join(filter_parts)
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
-                '-f', 'lavfi',
-                '-i', f'color=c=0x1e3c72:size={self.video_width}x{self.video_height}:duration={duration}',  # 0:v
-                '-i', audio_path,  # 1:a
+                '-f', 'lavfi', '-i', f'color=c=0x1e3c72:size={self.video_width}x{self.video_height}:duration={duration}',
+                '-i', audio_path,
                 '-filter_complex', filter_complex,
-                '-map', f'[{last_label}]',
-                '-map', '1:a',
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-shortest',
-                video_path
+                '-map', f'[{last_label}]', '-map', '1:a',
+                '-c:v', 'libx264', '-c:a', 'aac', '-shortest', video_path
             ]
             result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"Waveform video generation failed, using simple video. stderr: {result.stderr}")
+                print(f"Waveform video failed: {result.stderr}")
                 return self._create_simple_video(audio_path, video_path, duration)
             return video_path
         except Exception as e:
-            print(f"Waveform video creation error: {str(e)}")
+            print(f"Waveform video error: {str(e)}")
             return self._create_simple_video(audio_path, video_path, duration)
     
     def _create_simple_video(self, audio_path, video_path, duration):
-        """Create a simple video with static background and audio"""
+        """Create simple static background video."""
         try:
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
-                '-f', 'lavfi',
-                '-i', f'color=c=0x1e3c72:size={self.video_width}x{self.video_height}:duration={duration}',
+                '-f', 'lavfi', '-i', f'color=c=0x1e3c72:size={self.video_width}x{self.video_height}:duration={duration}',
                 '-i', audio_path,
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-shortest',
-                video_path
+                '-c:v', 'libx264', '-c:a', 'aac', '-shortest', video_path
             ]
-            
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
             return video_path
-            
         except Exception as e:
-            print(f"Simple video creation also failed: {str(e)}")
+            print(f"Simple video creation failed: {str(e)}")
             raise Exception("Failed to create video file")
     
     def _convert_audio_format(self, input_path, output_path, target_format):
-        """Convert audio file to different format using ffmpeg"""
+        """Convert audio to different format."""
         try:
             ffmpeg_cmd = [
-                'ffmpeg', '-y',
-                '-i', input_path,
+                'ffmpeg', '-y', '-i', input_path,
                 '-c:a', 'pcm_s16le' if target_format == 'wav' else 'libmp3lame',
                 output_path
             ]
-            
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-            
         except Exception as e:
             raise Exception(f"Failed to convert audio format: {str(e)}")
     
     def _concat_audio_files(self, input_paths, output_path, target_format='mp3'):
-        """Concatenate multiple audio files and re-encode to target format for robustness."""
+        """Concatenate multiple audio files."""
         if not input_paths:
             raise Exception("No audio segments to concatenate")
-        # Build concat list file
+        
         with tempfile.NamedTemporaryFile('w', delete=False, suffix='.txt') as list_file:
             list_path = list_file.name
             for p in input_paths:
-                # ffmpeg concat demuxer requires file paths quoted
                 list_file.write(f"file '{os.path.abspath(p)}'\n")
+        
         try:
             codec = 'libmp3lame' if target_format == 'mp3' else 'pcm_s16le'
             ffmpeg_cmd = [
-                'ffmpeg', '-y',
-                '-f', 'concat', '-safe', '0', '-i', list_path,
-                '-c:a', codec,
-                output_path
+                'ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path,
+                '-c:a', codec, output_path
             ]
             result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                # Fallback: decode pipeline concat
-                joined_tmp = os.path.join(tempfile.gettempdir(), f"joined_{uuid.uuid4()}.{target_format}")
+                # Fallback method
                 alt_cmd = ['ffmpeg', '-y']
                 for p in input_paths:
                     alt_cmd.extend(['-i', p])
-                alt_cmd.extend(['-filter_complex', f"concat=n={len(input_paths)}:v=0:a=1", '-c:a', codec, joined_tmp])
+                alt_cmd.extend(['-filter_complex', f"concat=n={len(input_paths)}:v=0:a=1", '-c:a', codec, output_path])
                 result2 = subprocess.run(alt_cmd, capture_output=True, text=True)
                 if result2.returncode != 0:
                     raise Exception(f"Audio concat failed: {result.stderr}\n{result2.stderr}")
-                os.replace(joined_tmp, output_path)
         finally:
             try:
                 os.remove(list_path)
@@ -500,77 +455,55 @@ class VoiceoverSystem:
                 pass
     
     def _generate_silence(self, output_path, seconds: float, target_format: str = 'mp3'):
-        """Generate a silent audio clip of the given duration in the desired format."""
+        """Generate silent audio clip."""
         try:
             codec = 'libmp3lame' if target_format == 'mp3' else 'pcm_s16le'
-            ext = 'mp3' if target_format == 'mp3' else 'wav'
-            if not output_path.endswith(f'.{ext}'):
-                output_path = f"{output_path}.{ext}"
             ffmpeg_cmd = [
-                'ffmpeg', '-y',
-                '-f', 'lavfi',
-                '-i', f"anullsrc=r=44100:cl=mono", '-t', str(max(0.1, seconds)),
-                '-c:a', codec,
-                output_path
+                'ffmpeg', '-y', '-f', 'lavfi', '-i', f"anullsrc=r=44100:cl=mono",
+                '-t', str(max(0.1, seconds)), '-c:a', codec, output_path
             ]
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-        except Exception as e:
-            # If silence generation fails, create a minimal 0.1s clip
+        except Exception:
+            # Fallback to minimal silence
             try:
-                fallback_codec = 'libmp3lame' if target_format == 'mp3' else 'pcm_s16le'
                 fallback_cmd = [
-                    'ffmpeg', '-y',
-                    '-f', 'lavfi',
-                    '-i', f"anullsrc=r=44100:cl=mono", '-t', '0.1',
-                    '-c:a', fallback_codec,
-                    output_path
+                    'ffmpeg', '-y', '-f', 'lavfi', '-i', f"anullsrc=r=44100:cl=mono",
+                    '-t', '0.1', '-c:a', codec, output_path
                 ]
                 subprocess.run(fallback_cmd, check=True, capture_output=True)
             except Exception:
-                # As last resort, skip silence
                 pass
     
     def _get_audio_duration(self, audio_path):
-        """Get duration of audio or video file in seconds"""
+        """Get audio/video duration in seconds."""
         try:
             ffprobe_cmd = [
-                'ffprobe', '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_entries', 'format=duration',
-                audio_path
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_entries', 'format=duration', audio_path
             ]
-            
             result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
-            
             if result.returncode == 0:
                 data = json.loads(result.stdout)
                 return float(data['format']['duration'])
             else:
-                return 30.0  # Default duration if detection fails
-                
-        except Exception as e:
-            print(f"Error getting audio duration: {str(e)}")
-            return 30.0  # Default duration
+                return 30.0
+        except Exception:
+            return 30.0
     
     def _escape_text_for_ffmpeg(self, text):
-        """Escape text for safe use in ffmpeg drawtext while preserving newlines for wrapping"""
+        """Escape text for ffmpeg drawtext filter."""
         if text is None:
             return ''
-        s = str(text)
-        # Preserve newlines for drawtext (used to wrap text), normalize CRLF
-        s = s.replace('\r\n', '\n').strip()
-        # Escape backslash first
+        s = str(text).replace('\r\n', '\n').strip()
         s = s.replace('\\', r'\\')
-        # Escape characters significant to drawtext parsing
         s = s.replace(':', r'\:')
         s = s.replace("'", r"\'")
         s = s.replace('%', r'\%')
         s = s.replace('[', r'\[').replace(']', r'\]')
-        # Do NOT replace '\n'
         return s
 
     def _escape_path_for_ffmpeg(self, path: str):
-        """Escape a filesystem path for use in drawtext fontfile option."""
+        """Escape filesystem path for ffmpeg."""
         if not path:
             return ''
         p = str(path)
@@ -582,7 +515,7 @@ class VoiceoverSystem:
         return p
 
     def _wrap_text_for_width(self, text: str, fontsize_px: int, margin_px: int):
-        """Naive word-wrap to ensure text width <= video_width - 2*margin using approx avg char width."""
+        """Word-wrap text to fit video width."""
         s = (text or '').strip()
         if not s:
             return ''
@@ -605,13 +538,10 @@ class VoiceoverSystem:
         return '\n'.join(lines)
 
     def _build_timed_drawtext_chain(self, base_label: str, captions):
-        """Return (filter_str, final_label) that overlays timed drawtext captions on base_label.
-        captions: list of {text, start, end}
-        """
+        """Build ffmpeg filter chain for timed captions."""
         label_in = base_label
         chain_parts = []
         for idx, cap in enumerate(captions):
-            # Wrap text to fit within margins, then escape
             wrapped = self._wrap_text_for_width(cap.get('text', ''), self.text_overlay_fontsize_px, self.text_overlay_side_margin_px)
             txt = self._escape_text_for_ffmpeg(wrapped)
             start = float(cap.get('start', 0.0))
@@ -629,46 +559,189 @@ class VoiceoverSystem:
             label_in = label_out
         return (';'.join(chain_parts) if chain_parts else '', label_in)
 
-    def _make_captions_from_text(self, text: str, total_duration: float):
-        """Split text into readable chunks and distribute total_duration proportionally.
-        Returns list of {text, start, end}.
-        """
-        s = (text or '').strip()
-        if not s:
+    def _make_captions_from_text(self, text: str, audio_duration: float):
+        """Create caption data with accurate timing based on actual speech rate."""
+        if not text or audio_duration <= 0:
             return []
-        # Sentence split; if only one, try commas; fallback to fixed-size chunks
-        sentences = [t.strip() for t in re.split(r'(?<=[\.\?!])\s+', s) if t.strip()]
-        if len(sentences) == 1:
-            sentences = [t.strip() for t in re.split(r',\s+', s) if t.strip()]
-        if len(sentences) == 1 and len(s) > 120:
-            # Hard wrap every ~100 chars
-            sentences = [s[i:i+100].strip() for i in range(0, len(s), 100)]
-        # Compute weights
-        lengths = [max(1, len(t)) for t in sentences]
-        total_len = sum(lengths)
-        # Initial proportional durations with a minimum
-        min_d = 0.6
-        raw = [total_duration * (L/total_len) for L in lengths]
-        adj = [max(min_d, r) for r in raw]
-        # Normalize to total_duration
-        scale = total_duration / max(1e-6, sum(adj))
-        adj = [a*scale for a in adj]
-        # Build timeline
-        t = 0.0
-        caps = []
-        for i, sent in enumerate(sentences):
-            start = t
-            end = t + adj[i]
-            caps.append({'text': sent, 'start': start, 'end': end})
-            t = end
-        # Clip to total_duration
-        for c in caps:
-            c['start'] = max(0.0, min(c['start'], total_duration))
-            c['end'] = max(c['start'] + 0.1, min(c['end'], total_duration))
-        return caps
+        
+        # Create optimized text chunks
+        chunks = self._create_dynamic_caption_chunks(text)
+        if not chunks:
+            return []
+        
+        captions = []
+        
+        # Calculate timing based on actual speech characteristics
+        total_words = sum(len(chunk.split()) for chunk in chunks)
+        total_chars = sum(len(chunk) for chunk in chunks)
+        
+        if total_words == 0:
+            return []
+        
+        # Estimate actual speech rate from the audio duration
+        # Make changes here for configuring speech
+        # This gives us the actual words per second from the TTS engine
+        actual_wps = total_words / audio_duration
+        
+        # Add buffer time for natural pacing (10% buffer for pauses and emphasis)
+        buffer_factor = 1.0 #Changing this from 1.1 to 1
+        
+        current_time = 0.0
+        
+        for i, chunk in enumerate(chunks):
+            chunk_words = len(chunk.split())
+            chunk_chars = len(chunk)
+            
+            # Calculate duration based on word count and actual speech rate
+            base_duration = (chunk_words / actual_wps) * buffer_factor
+            
+            # Adjust for chunk characteristics
+            duration_adjustments = 0.0
+            
+            # Longer chunks need slightly more time for comprehension
+            if chunk_words > 15:
+                duration_adjustments += 0 #Changing this from 0.3
+            elif chunk_words < 5:
+                duration_adjustments -= 0.1 #Changing this from 0.2
+            
+            # Sentences with punctuation need pause time
+            punctuation_count = chunk.count('.') + chunk.count('!') + chunk.count('?') + chunk.count(';')
+            duration_adjustments += punctuation_count * 0 #Changing this from 0.2
+            
+            # Complex sentences (with commas) need more time
+            comma_count = chunk.count(',')
+            duration_adjustments += comma_count * 0 #Changing this from 0.1
+            
+            # Apply adjustments
+            final_duration = max(base_duration + duration_adjustments, 1.5)  # Minimum 1.5 seconds
+            
+            # Ensure we don't exceed the total audio duration
+            if current_time + final_duration > audio_duration:
+                final_duration = audio_duration - current_time
+                if final_duration < 0.5:  # If less than 0.5 seconds left, merge with previous
+                    if captions:
+                        captions[-1]['text'] += ' ' + chunk
+                        captions[-1]['end'] = audio_duration
+                    break
+            
+            caption = {
+                'start': current_time,
+                'end': current_time + final_duration,
+                'text': chunk.strip(),
+                'words': chunk_words,
+                'chars': chunk_chars
+            }
+            
+            captions.append(caption)
+            current_time += final_duration
+        
+        # Final adjustment: ensure last caption ends exactly at audio duration
+        if captions and captions[-1]['end'] < audio_duration:
+            time_remaining = audio_duration - captions[-1]['end']
+            # Distribute remaining time proportionally among all captions
+            for caption in captions:
+                duration = caption['end'] - caption['start']
+                proportion = duration / current_time if current_time > 0 else 0
+                additional_time = time_remaining * proportion
+                caption['end'] += additional_time
+        
+        return captions
+
+    def _create_dynamic_caption_chunks(self, text: str):
+        """Create caption chunks optimized for natural speech pacing and readability."""
+        if not text:
+            return []
+        
+        import re
+        
+        # First, split by major sentence boundaries
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        if not sentences:
+            return [text.strip()]
+        
+        chunks = []
+        current_chunk = ""
+        
+        for i, sentence in enumerate(sentences):
+            # Clean up the sentence
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            # Build the chunk
+            if current_chunk:
+                test_chunk = current_chunk + ". " + sentence
+            else:
+                test_chunk = sentence
+            
+            should_break = False
+            
+            # Break conditions based on natural speech pacing:
+            
+            # 1. Character limit for comfortable reading (120-180 chars is optimal)
+            if len(test_chunk) > 150:
+                should_break = True
+            
+            # 2. Word count limit (15-25 words per chunk for comfortable reading speed)
+            word_count = len(test_chunk.split())
+            if word_count > 20:
+                should_break = True
+            
+            # 3. Natural pause points (commas, conjunctions, etc.)
+            if len(test_chunk) > 80 and re.search(r',\s+(?:and|but|or|however|therefore|moreover)\s+', test_chunk):
+                should_break = True
+            
+            # 4. End of sentences (natural breaking point)
+            if i == len(sentences) - 1:
+                should_break = True
+            
+            # 5. Multiple sentences in chunk (break after 1-2 complete sentences)
+            sentence_markers = test_chunk.count('.') + test_chunk.count('!') + test_chunk.count('?')
+            if sentence_markers >= 2 and len(test_chunk) > 100:
+                should_break = True
+            
+            if should_break:
+                if current_chunk:
+                    # Add the current chunk before breaking
+                    final_chunk = current_chunk + (". " + sentence if current_chunk else sentence)
+                    chunks.append(final_chunk.strip())
+                    current_chunk = ""
+                else:
+                    # Single sentence is too long, add it as is
+                    chunks.append(sentence.strip())
+            else:
+                current_chunk = test_chunk
+        
+        # Add any remaining chunk
+        if current_chunk and current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        # Post-process chunks to handle very short ones
+        final_chunks = []
+        i = 0
+        while i < len(chunks):
+            chunk = chunks[i]
+            
+            # If chunk is very short (< 30 chars) and not the last one, try to merge with next
+            if len(chunk) < 30 and i < len(chunks) - 1:
+                next_chunk = chunks[i + 1]
+                merged = chunk + ". " + next_chunk
+                
+                # Only merge if the result is still reasonable length
+                if len(merged) <= 180 and len(merged.split()) <= 25:
+                    final_chunks.append(merged)
+                    i += 2  # Skip the next chunk since we merged it
+                    continue
+            
+            final_chunks.append(chunk)
+            i += 1
+        
+        return final_chunks if final_chunks else [text.strip()]
 
     def get_file_info(self, filename: str):
-        """Return basic info for a generated voiceover file used by the download route."""
+        """Get info for generated voiceover file."""
         try:
             file_path = os.path.join(self.output_folder, filename)
             if not os.path.exists(file_path):
@@ -690,7 +763,7 @@ class VoiceoverSystem:
             return None
 
     def _safe_rmtree(self, path: str):
-        """Best-effort recursive directory removal without raising."""
+        """Safe recursive directory removal."""
         try:
             if path and os.path.exists(path):
                 shutil.rmtree(path, ignore_errors=True)
