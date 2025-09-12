@@ -553,14 +553,15 @@ def generate_voiceover():
         if not text:
             return jsonify({'success': False, 'error': 'No text provided'})
         
-        # Generate voiceover
+        # Generate voiceover with PORTRAIT format for YouTube Shorts
         result = voiceover_system.generate_speech(
             text=text,
             voice=voice,
             speed=speed,
             format=format_type,
             session_id=session.get('session_id'),
-            background_image_path=background_image if background_image else None
+            background_image_path=background_image if background_image else None,
+            generation_type='shorts'  # Portrait format for YouTube Shorts Generator
         )
         
         return jsonify(result)
@@ -578,33 +579,27 @@ def generate_voiceover_standalone():
         voice = data.get('voice', 'nova')
         speed = float(data.get('speed', 1.0))
         format_type = data.get('format', 'mp3')
+        background_image = data.get('background_image', '')
         
         if not text:
-            return jsonify({'error': 'No text provided'}), 400
+            return jsonify({'success': False, 'error': 'No text provided'})
         
-        # Generate voiceover using the voiceover system
+        # Generate voiceover with REGULAR format for Standalone AI Voiceover Generator
         result = voiceover_system.generate_speech(
             text=text,
             voice=voice,
             speed=speed,
             format=format_type,
             session_id=None,  # No session needed for standalone
-            background_image_path=None
+            background_image_path=background_image if background_image else None,
+            generation_type='regular'  # Regular format (landscape) for Standalone Generator
         )
         
-        if result.get('success'):
-            return jsonify({
-                'file_url': result.get('file_url'),
-                'format': result.get('format'),
-                'duration': result.get('duration'),
-                'file_path': result.get('file_path')
-            })
-        else:
-            return jsonify({'error': result.get('error', 'Failed to generate voiceover')}), 500
+        return jsonify(result)
         
     except Exception as e:
         print(f"Error generating standalone voiceover: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/download-voiceover/<filename>')
 def download_voiceover(filename):
@@ -653,6 +648,72 @@ def download_voiceover(filename):
         
     except Exception as e:
         print(f"Error downloading voiceover: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/voiceovers/download-all', methods=['GET'])
+def download_all_voiceovers():
+    """Download all generated voiceover files as a zip archive."""
+    try:
+        base = voiceover_system.output_folder
+        os.makedirs(base, exist_ok=True)
+        allowed_exts = {'.mp3', '.wav', '.mp4', '.zip', '.srt'}
+        
+        # Collect all voiceover files
+        files_to_zip = []
+        for name in os.listdir(base):
+            if not name or name.startswith('.'):
+                continue
+            path = os.path.join(base, name)
+            if not os.path.isfile(path):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in allowed_exts:
+                continue
+            files_to_zip.append((name, path))
+        
+        if not files_to_zip:
+            return jsonify({'error': 'No voiceover files found'}), 404
+        
+        # Create a temporary zip file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_zip:
+            temp_zip_path = temp_zip.name
+        
+        # Create zip with all voiceover files
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for filename, filepath in files_to_zip:
+                try:
+                    zf.write(filepath, filename)
+                except Exception as e:
+                    print(f"Error adding {filename} to zip: {e}")
+                    continue
+        
+        # Generate download filename with current date
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        download_name = f"all_voiceovers_{today_str}.zip"
+        
+        # Send the zip file and clean up
+        def remove_temp_file(response):
+            try:
+                os.unlink(temp_zip_path)
+            except Exception:
+                pass
+            return response
+        
+        response = send_file(
+            temp_zip_path,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype='application/zip'
+        )
+        
+        # Schedule cleanup after response is sent
+        import atexit
+        atexit.register(lambda: os.path.exists(temp_zip_path) and os.unlink(temp_zip_path))
+        
+        return response
+        
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/status/<session_id>')
@@ -728,13 +789,30 @@ def generate_shorts():
     speed = payload['speed']
     bg_file = payload['background_file']
 
+    # Generate a unique session ID for progress tracking
+    shorts_session_id = str(uuid.uuid4())
+    
+    print(f"=== YOUTUBE SHORTS GENERATION START ===")
+    print(f"Shorts Session ID: {shorts_session_id}")
+    print(f"Script length: {len(script)} characters")
+    print(f"Voice: {voice}, Speed: {speed}")
+
     temp_bg_path = None
     try:
+        # Emit initial progress
+        socketio.emit('progress_update', {
+            'session_id': shorts_session_id,
+            'step': 'shorts-generation',
+            'progress': 0,
+            'message': 'Preparing script for YouTube Shorts generation...'
+        })
+
         if bg_file and getattr(bg_file, 'filename', ''):
             os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
             bg_name = secure_filename(bg_file.filename)
             temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
             bg_file.save(temp_bg_path)
+            print(f"Background image saved: {temp_bg_path}")
 
         # Split the script by pause markers into shorts segments
         def split_into_scripts(script_text):
@@ -756,12 +834,39 @@ def generate_shorts():
         
         segments = split_into_scripts(script)
         if not segments:
+            socketio.emit('processing_error', {
+                'session_id': shorts_session_id,
+                'error': 'No segments found in script'
+            })
             return jsonify({'error': 'No segments found in script'}), 400
+
+        print(f"Split script into {len(segments)} segments")
+        
+        # Emit progress for script splitting
+        socketio.emit('progress_update', {
+            'session_id': shorts_session_id,
+            'step': 'shorts-generation',
+            'progress': 10,
+            'message': f'Script split into {len(segments)} shorts segments. Starting video generation...'
+        })
 
         # Generate a portrait MP4 for each segment
         outputs = []
         file_paths = []  # list of tuples (idx, path, title)
+        
         for idx, seg in enumerate(segments, start=1):
+            # Calculate progress for this segment
+            segment_progress = 10 + (idx - 1) * (70 / len(segments))
+            
+            socketio.emit('progress_update', {
+                'session_id': shorts_session_id,
+                'step': 'shorts-generation',
+                'progress': int(segment_progress),
+                'message': f'Generating video {idx} of {len(segments)}...'
+            })
+            
+            print(f"Generating segment {idx}/{len(segments)}: {seg[:50]}...")
+            
             res = voiceover_system.generate_speech(
                 text=seg,
                 voice=voice,
@@ -770,8 +875,17 @@ def generate_shorts():
                 session_id=None,
                 background_image_path=temp_bg_path
             )
+            
             if not res.get('success'):
-                raise Exception(f"Failed to generate segment {idx}")
+                error_msg = f"Failed to generate segment {idx}: {res.get('error', 'Unknown error')}"
+                print(f"ERROR: {error_msg}")
+                socketio.emit('processing_error', {
+                    'session_id': shorts_session_id,
+                    'error': error_msg
+                })
+                raise Exception(error_msg)
+
+            print(f"Successfully generated segment {idx}")
 
             # Capture the suggested download title for consistent naming
             seg_title = res.get('download_title') or f"short_{idx:02d}"
@@ -788,11 +902,21 @@ def generate_shorts():
             if fp and os.path.exists(fp):
                 file_paths.append((idx, fp, seg_title))
 
+        # Emit progress for zip creation
+        socketio.emit('progress_update', {
+            'session_id': shorts_session_id,
+            'step': 'shorts-generation',
+            'progress': 80,
+            'message': 'Creating download package...'
+        })
+
         # Create a zip with all generated MP4s for one-click download
         os.makedirs(voiceover_system.output_folder, exist_ok=True)
         zip_name = f"shorts_{uuid.uuid4()}.zip"
         zip_path = os.path.join(voiceover_system.output_folder, zip_name)
         used_names = set()
+        
+        print(f"Creating zip file: {zip_path}")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for idx, fp, title in file_paths:
                 # Sanitize and ensure uniqueness; match individual download naming
@@ -808,21 +932,57 @@ def generate_shorts():
                 used_names.add(candidate)
                 try:
                     zf.write(fp, candidate)
-                except Exception:
+                    print(f"Added {candidate} to zip")
+                except Exception as e:
+                    print(f"Error adding {candidate} to zip: {e}")
                     pass
+        
         # Build a friendly suggested name with date
         today_str = datetime.now().strftime('%Y-%m-%d')
         zip_url = f"/download-voiceover/{zip_name}?dl=1&name=youtube_shorts_{today_str}"
 
-        return jsonify({'success': True, 'count': len(outputs), 'items': outputs, 'zip_url': zip_url})
+        # Emit completion
+        socketio.emit('progress_update', {
+            'session_id': shorts_session_id,
+            'step': 'shorts-generation',
+            'progress': 100,
+            'message': f'Successfully generated {len(outputs)} YouTube Shorts!'
+        })
+
+        print(f"=== YOUTUBE SHORTS GENERATION COMPLETED ===")
+        print(f"Generated {len(outputs)} videos")
+        print(f"Zip file: {zip_path}")
+
+        # Return response with both 'items' and 'videos' for compatibility
+        response_data = {
+            'success': True, 
+            'count': len(outputs), 
+            'items': outputs,  # Backend format
+            'videos': outputs,  # Frontend expected format
+            'zip_url': zip_url,
+            'session_id': shorts_session_id
+        }
+        
+        return jsonify(response_data)
+        
     except Exception as e:
-        print(f"Error generating shorts: {e}")
+        error_msg = f"Error generating shorts: {e}"
+        print(f"ERROR: {error_msg}")
+        
+        # Emit error to WebSocket
+        socketio.emit('processing_error', {
+            'session_id': shorts_session_id,
+            'error': str(e)
+        })
+        
         return jsonify({'error': str(e)}), 500
     finally:
         if temp_bg_path and os.path.exists(temp_bg_path):
             try:
                 os.remove(temp_bg_path)
-            except Exception:
+                print(f"Cleaned up temp background image: {temp_bg_path}")
+            except Exception as e:
+                print(f"Error cleaning up temp file: {e}")
                 pass
 
 @app.route('/voices', methods=['GET'])

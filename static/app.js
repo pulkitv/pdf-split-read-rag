@@ -543,6 +543,170 @@ function initStandaloneVoiceover() {
   });
 }
 
+// YouTube Shorts handlers
+function initYoutubeShortsHandlers() {
+  // Show/hide shorts generator panel
+  $('show-shorts-generator-btn')?.addEventListener('click', () => {
+    const panel = $('shorts-generator-panel');
+    const visible = panel && panel.style.display !== 'none';
+    setDisplay('shorts-generator-panel', !visible);
+    if (!visible) scrollIntoViewIfHidden('shorts-generator-panel');
+  });
+
+  $('generate-shorts-btn')?.addEventListener('click', async () => {
+    setDisplay('error-section', false);
+    
+    const script = $('shorts-script-text')?.value?.trim() || '';
+    const voice = $('shorts-voice-select')?.value || 'nova';
+    const speed = parseFloat($('shorts-speed-select')?.value || '1.0');
+    const bgFile = $('shorts-background-image')?.files?.[0] || null;
+    
+    if (!script) {
+      setText('error-message', 'Please enter a script for the YouTube Shorts.');
+      setDisplay('error-section', true);
+      return;
+    }
+    
+    // Show progress
+    setDisplay('shorts-progress', true);
+    setDisplay('shorts-result', false);
+    setProgress('shorts-progress-bar', 10);
+    setBadge('shorts-status', 'Processing', 'danger');
+    setText('shorts-message', 'Generating YouTube Shorts...');
+    
+    try {
+      let resp, data;
+      if (bgFile) {
+        const fd = new FormData();
+        fd.append('script', script);
+        fd.append('voice', voice);
+        fd.append('speed', String(speed));
+        fd.append('backgroundImage', bgFile);
+        resp = await fetch('/generate-shorts', { method: 'POST', body: fd });
+      } else {
+        resp = await fetch('/generate-shorts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            script: script,
+            voice: voice,
+            speed: speed
+          })
+        });
+      }
+      
+      data = await resp.json();
+      
+      if (!resp.ok || data.error) {
+        throw new Error(data.error || 'Failed to generate YouTube Shorts');
+      }
+      
+      // Update progress to completion
+      setProgress('shorts-progress-bar', 100);
+      setBadge('shorts-status', 'Complete', 'success');
+      setText('shorts-message', 'YouTube Shorts generated successfully!');
+      
+      // Show results
+      displayShortsResults(data.videos || []);
+      
+      setTimeout(() => {
+        setDisplay('shorts-progress', false);
+      }, 1000);
+      
+    } catch (err) {
+      setText('error-message', err.message || String(err));
+      setDisplay('error-section', true);
+      setDisplay('shorts-progress', false);
+    }
+  });
+  
+  // Speed slider handler
+  $('shorts-speed')?.addEventListener('input', (e) => {
+    const speedDisplay = $('shorts-speed-display');
+    if (speedDisplay) {
+      speedDisplay.textContent = `${e.target.value}x`;
+    }
+  });
+  
+  // Keyboard shortcut for generation
+  $('shorts-script')?.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      $('generate-shorts-btn')?.click();
+    }
+  });
+}
+
+// Display YouTube Shorts results
+function displayShortsResults(videos) {
+  const resultsContainer = $('shorts-result');
+  const videosContainer = $('shorts-videos-container');
+  
+  if (!resultsContainer || !videosContainer) return;
+  
+  if (!videos || videos.length === 0) {
+    videosContainer.innerHTML = '<div class="alert alert-warning">No videos were generated.</div>';
+    setDisplay('shorts-result', true);
+    return;
+  }
+  
+  let html = '<div class="row">';
+  
+  videos.forEach((video, index) => {
+    html += `
+      <div class="col-md-6 col-lg-4 mb-3">
+        <div class="card h-100">
+          <div class="card-body">
+            <h6 class="card-title">
+              <i class="fab fa-youtube text-danger me-2"></i>
+              Short ${index + 1}
+            </h6>
+            <p class="card-text">
+              <small class="text-muted">
+                Duration: ${video.duration || 'Unknown'}s<br>
+                Format: ${video.format?.toUpperCase() || 'MP4'}
+              </small>
+            </p>
+            <div class="d-grid gap-2">
+              <a href="${video.file_url}" class="btn btn-outline-primary btn-sm" target="_blank">
+                <i class="fas fa-play me-1"></i>Preview
+              </a>
+              <a href="${video.file_url}?dl=1" class="btn btn-success btn-sm">
+                <i class="fas fa-download me-1"></i>Download
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  html += '</div>';
+  videosContainer.innerHTML = html;
+  setDisplay('shorts-result', true);
+}
+
+// Show Shorts section
+function showShortsSection() {
+  setDisplay('upload-section', false);
+  setDisplay('processing-section', false);
+  setDisplay('results-section', false);
+  setDisplay('voiceover-section', false);
+  setDisplay('shorts-section', true);
+  
+  // Update navigation
+  document.querySelectorAll('.nav-link').forEach(link => {
+    link.classList.remove('active');
+  });
+  
+  const shortsNavLink = document.querySelector('[onclick*="showShortsSection"]');
+  if (shortsNavLink) {
+    shortsNavLink.classList.add('active');
+  }
+  
+  scrollIntoViewIfHidden('shorts-section');
+}
+
 // App init
 document.addEventListener('DOMContentLoaded', () => {
   // Ensure error panel is hidden on load
@@ -555,4 +719,5 @@ document.addEventListener('DOMContentLoaded', () => {
   initSearchHandlers();
   initVoiceoverHandlers();
   initStandaloneVoiceover();
+  initYoutubeShortsHandlers();
 });

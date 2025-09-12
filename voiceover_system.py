@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import shutil
 import re
+from werkzeug.utils import secure_filename
 
 # Removed unused Flask app and request imports to keep this module framework-agnostic
 
@@ -27,60 +28,226 @@ class VoiceoverSystem:
         self.available_voices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
         self.supported_formats = ['mp3', 'wav', 'mp4']
         
-        # Video generation settings
-        self.video_width = int(os.getenv('VIDEO_WIDTH', 1920))
-        self.video_height = int(os.getenv('VIDEO_HEIGHT', 1080))
+        # Video generation settings - Support both formats
+        # Regular format (landscape) - for Standalone AI Voiceover Generator
+        self.regular_video_width = 1920
+        self.regular_video_height = 1080
+        
+        # YouTube Shorts format (portrait) - for YouTube Shorts Generator
+        self.shorts_video_width = 1080
+        self.shorts_video_height = 1920
+        
+        # Default to regular format (will be overridden by generation_type parameter)
+        self.video_width = self.regular_video_width
+        self.video_height = self.regular_video_height
         self.video_fps = int(os.getenv('VIDEO_FPS', 30))
+        
         # Text overlay settings
         self.text_overlay_enabled = os.getenv('VOICEOVER_TEXT_OVERLAY', 'true').lower() == 'true'
         self.text_overlay_font_path = os.getenv('VOICEOVER_FONT_PATH', '')
         self.text_overlay_max_chars = int(os.getenv('VOICEOVER_TEXT_OVERLAY_MAX_CHARS', 120))
         self.text_overlay_fontsize_px = int(os.getenv('VOICEOVER_OVERLAY_FONTSIZE', 64))
-        self.text_overlay_side_margin_px = int(os.getenv('VOICEOVER_TEXT_MARGIN', max(40, int(self.video_width * 0.05))))
+        self.text_overlay_side_margin_px = int(os.getenv('VOICEOVER_TEXT_MARGIN', 40))
         
         # TTS request constraints
         self.max_input_chars = int(os.getenv('VOICEOVER_MAX_INPUT_CHARS', 3900))
         self.pause_marker_primary = '— pause —'
         self.pause_marker_fallback = '-- pause --'
         self.pause_silence_seconds = float(os.getenv('VOICEOVER_PAUSE_SECONDS', 0))
+
+        # Video format configurations
+        self.video_formats = {
+            'regular': {
+                'width': 1920,
+                'height': 1080,
+                'description': 'Regular landscape format (1920x1080)'
+            },
+            'youtube_shorts': {
+                'width': 1080,
+                'height': 1920,
+                'description': 'YouTube Shorts portrait format (1080x1920)'
+            }
+        }
         
-    def generate_speech(self, text, voice='nova', speed=1.0, format='mp3', session_id=None, background_image_path=None):
-        """Generate speech from text using OpenAI TTS with auto-chunking for long scripts."""
-        file_id = str(uuid.uuid4())
-        if session_id:
-            file_id = f"{session_id}_{file_id}"
-        work_dir = tempfile.mkdtemp(prefix="voiceover_")
-        segments = self._split_text_for_tts(text, self.max_input_chars)
-
-        def finalize_output_from_mp3(source_mp3_path: str, captions=None):
-            if format == 'mp4':
-                video_path = self._create_video_with_audio(
-                    source_mp3_path, file_id, text,
-                    background_image_path=background_image_path,
-                    captions=captions,
-                )
-                final_path = os.path.join(self.output_folder, os.path.basename(video_path))
-                if video_path != final_path:
-                    os.replace(video_path, final_path)
-                return final_path, 'mp4'
-            elif format == 'wav':
-                final_wav = os.path.join(self.output_folder, f"{file_id}.wav")
-                self._convert_audio_format(source_mp3_path, final_wav, 'wav')
-                return final_wav, 'wav'
-            else:
-                final_mp3 = os.path.join(self.output_folder, f"{file_id}.mp3")
-                if os.path.abspath(source_mp3_path) != os.path.abspath(final_mp3):
-                    os.replace(source_mp3_path, final_mp3)
-                return final_mp3, 'mp3'
-
+    def _generate_filename_from_text(self, text):
+        """Generate a safe filename from the first line of text."""
+        if not text:
+            return None
+        
+        # Get the first line and clean it up
+        first_line = text.split('\n')[0].strip()
+        if not first_line:
+            return None
+        
+        # Remove common prefixes and clean up
+        first_line = re.sub(r'^(chapter|part|section)\s*\d*[:\-\s]*', '', first_line, flags=re.IGNORECASE)
+        
+        # Limit length to avoid filesystem issues
+        if len(first_line) > 50:
+            # Try to find a good breaking point
+            words = first_line.split()
+            truncated = ""
+            for word in words:
+                if len(truncated + " " + word) <= 50:
+                    truncated = (truncated + " " + word).strip()
+                else:
+                    break
+            first_line = truncated if truncated else first_line[:50]
+        
+        # Make it filesystem-safe
+        filename = secure_filename(first_line)
+        
+        # Fallback if secure_filename removes everything
+        if not filename or len(filename) < 3:
+            return None
+            
+        return filename
+    
+    def generate_speech(self, text, voice='nova', speed=1.0, format='mp3', session_id=None, 
+                       background_image_path=None, generation_type='youtube_shorts', custom_filename=None):
+        """
+        Generate speech from text with optional video output
+        
+        Args:
+            text: Text to convert to speech
+            voice: Voice to use (nova, alloy, echo, fable, onyx, shimmer)
+            speed: Speech speed (0.25 to 4.0)
+            format: Output format (mp3, wav, mp4)
+            session_id: Optional session ID for tracking
+            background_image_path: Path to background image for video
+            generation_type: 'regular' or 'standalone' for landscape (1920x1080), 
+                           'shorts' or 'youtube_shorts' for portrait (1080x1920)
+            custom_filename: Optional custom filename for the output file
+        """
         try:
-            # Single segment processing
-            if len(segments) == 1 and segments[0]['type'] == 'text':
-                temp_mp3 = os.path.join(work_dir, f"{file_id}.mp3")
-                self._tts_request_to_file(segments[0]['content'], voice=voice, speed=speed, out_path=temp_mp3)
-                total_dur = self._get_audio_duration(temp_mp3)
-                captions = self._make_captions_from_text(segments[0]['content'], total_dur)
-                final_path, final_fmt = finalize_output_from_mp3(temp_mp3, captions=captions if self.text_overlay_enabled else None)
+            # Generate base filename from first line of text if not provided
+            if custom_filename is None:
+                # Extract first line and clean it for filename
+                first_line = text.split('\n')[0].strip()
+                # Remove common separators and clean for filename
+                first_line = first_line.replace('— pause —', '').strip()
+                if first_line:
+                    # Clean the text to make it filename-safe
+                    import re
+                    cleaned_text = re.sub(r'[^\w\s-]', '', first_line)
+                    cleaned_text = re.sub(r'[-\s]+', '_', cleaned_text)
+                    custom_filename = cleaned_text[:50]  # Limit to 50 characters
+                else:
+                    custom_filename = "voiceover"
+            
+            # Use custom filename as base, with UUID fallback for uniqueness
+            base_filename = custom_filename or str(uuid.uuid4())
+            
+            # Set video dimensions based on generation type
+            # Handle both 'shorts' and 'youtube_shorts' for backward compatibility
+            if generation_type in ['shorts', 'youtube_shorts']:
+                self.video_width = self.shorts_video_width
+                self.video_height = self.shorts_video_height
+                # Optimize text settings for mobile/portrait viewing
+                self.text_overlay_fontsize_px = int(os.getenv('VOICEOVER_SHORTS_FONTSIZE', 56))  # Larger for mobile readability
+                self.text_overlay_side_margin_px = int(max(50, int(self.video_width * 0.08)))  # More margin for mobile
+                print(f"Using YouTube Shorts format: {self.video_width}x{self.video_height}")
+            else:  # 'regular' or 'standalone'
+                self.video_width = self.regular_video_width
+                self.video_height = self.regular_video_height
+                # Standard text settings for desktop/landscape viewing
+                self.text_overlay_fontsize_px = int(os.getenv('VOICEOVER_REGULAR_FONTSIZE', 64))
+                self.text_overlay_side_margin_px = int(max(80, int(self.video_width * 0.06)))  # Proportional margins
+                print(f"Using Regular format: {self.video_width}x{self.video_height}")
+            
+            file_id = str(uuid.uuid4())
+            if session_id:
+                file_id = f"{session_id}_{file_id}"
+            work_dir = tempfile.mkdtemp(prefix="voiceover_")
+            segments = self._split_text_for_tts(text, self.max_input_chars)
+
+            def finalize_output_from_mp3(source_mp3_path: str, captions=None):
+                # Generate filename from text if custom_filename not provided
+                if custom_filename:
+                    base_filename = custom_filename
+                else:
+                    base_filename = self._generate_filename_from_text(text)
+                    if not base_filename:
+                        base_filename = file_id
+                
+                if format == 'mp4':
+                    video_path = self._create_video_with_audio(
+                        source_mp3_path, base_filename, text,
+                        background_image_path=background_image_path,
+                        captions=captions,
+                    )
+                    final_path = os.path.join(self.output_folder, os.path.basename(video_path))
+                    if video_path != final_path:
+                        os.replace(video_path, final_path)
+                    return final_path, 'mp4'
+                elif format == 'wav':
+                    final_wav = os.path.join(self.output_folder, f"{base_filename}.wav")
+                    self._convert_audio_format(source_mp3_path, final_wav, 'wav')
+                    return final_wav, 'wav'
+                else:
+                    final_mp3 = os.path.join(self.output_folder, f"{base_filename}.mp3")
+                    if os.path.abspath(source_mp3_path) != os.path.abspath(final_mp3):
+                        os.replace(source_mp3_path, final_mp3)
+                    return final_mp3, 'mp3'
+
+            try:
+                # Single segment processing
+                if len(segments) == 1 and segments[0]['type'] == 'text':
+                    temp_mp3 = os.path.join(work_dir, f"{file_id}.mp3")
+                    self._tts_request_to_file(segments[0]['content'], voice=voice, speed=speed, out_path=temp_mp3)
+                    total_dur = self._get_audio_duration(temp_mp3)
+                    captions = self._make_captions_from_text(segments[0]['content'], total_dur)
+                    final_path, final_fmt = finalize_output_from_mp3(temp_mp3, captions=captions if self.text_overlay_enabled else None)
+                    self._safe_rmtree(work_dir)
+                    return {
+                        'success': True,
+                        'file_path': final_path,
+                        'file_url': f"/download-voiceover/{os.path.basename(final_path)}",
+                        'format': final_fmt,
+                        'duration': self._get_audio_duration(final_path)
+                    }
+
+                # Multi-segment processing
+                parts = []
+                for seg in segments:
+                    if seg['type'] == 'pause':
+                        silence_mp3 = os.path.join(work_dir, f"silence_{len(parts)}.mp3")
+                        self._generate_silence(silence_mp3, self.pause_silence_seconds, target_format='mp3')
+                        parts.append({'type': 'pause', 'path': silence_mp3, 'duration': None})
+                    else:
+                        seg_mp3 = os.path.join(work_dir, f"seg_{len(parts)}.mp3")
+                        self._tts_request_to_file(seg['content'], voice=voice, speed=speed, out_path=seg_mp3)
+                        parts.append({'type': 'text', 'path': seg_mp3, 'text': seg['content'], 'duration': None})
+
+                # Compute durations and build captions
+                for p in parts:
+                    p['duration'] = self._get_audio_duration(p['path'])
+                
+                captions = []
+                current_time = 0.0
+                
+                for p in parts:
+                    if p['type'] == 'pause':
+                        current_time += p['duration']
+                    else:
+                        segment_start = current_time
+                        segment_end = current_time + p['duration']
+                        segment_captions = self._make_captions_from_text(p['text'], p['duration'])
+                        
+                        for seg_cap in segment_captions:
+                            captions.append({
+                                'text': seg_cap['text'],
+                                'start': segment_start + seg_cap['start'],
+                                'end': segment_start + seg_cap['end']
+                            })
+                        
+                        current_time = segment_end
+
+                # Concatenate audio parts
+                joined_mp3 = os.path.join(work_dir, f"{file_id}_joined.mp3")
+                self._concat_audio_files([p['path'] for p in parts], joined_mp3, target_format='mp3')
+
+                final_path, final_fmt = finalize_output_from_mp3(joined_mp3, captions=captions if self.text_overlay_enabled else None)
                 self._safe_rmtree(work_dir)
                 return {
                     'success': True,
@@ -89,56 +256,10 @@ class VoiceoverSystem:
                     'format': final_fmt,
                     'duration': self._get_audio_duration(final_path)
                 }
-
-            # Multi-segment processing
-            parts = []
-            for seg in segments:
-                if seg['type'] == 'pause':
-                    silence_mp3 = os.path.join(work_dir, f"silence_{len(parts)}.mp3")
-                    self._generate_silence(silence_mp3, self.pause_silence_seconds, target_format='mp3')
-                    parts.append({'type': 'pause', 'path': silence_mp3, 'duration': None})
-                else:
-                    seg_mp3 = os.path.join(work_dir, f"seg_{len(parts)}.mp3")
-                    self._tts_request_to_file(seg['content'], voice=voice, speed=speed, out_path=seg_mp3)
-                    parts.append({'type': 'text', 'path': seg_mp3, 'text': seg['content'], 'duration': None})
-
-            # Compute durations and build captions
-            for p in parts:
-                p['duration'] = self._get_audio_duration(p['path'])
-            
-            captions = []
-            current_time = 0.0
-            
-            for p in parts:
-                if p['type'] == 'pause':
-                    current_time += p['duration']
-                else:
-                    segment_start = current_time
-                    segment_end = current_time + p['duration']
-                    segment_captions = self._make_captions_from_text(p['text'], p['duration'])
-                    
-                    for seg_cap in segment_captions:
-                        captions.append({
-                            'text': seg_cap['text'],
-                            'start': segment_start + seg_cap['start'],
-                            'end': segment_start + seg_cap['end']
-                        })
-                    
-                    current_time = segment_end
-
-            # Concatenate audio parts
-            joined_mp3 = os.path.join(work_dir, f"{file_id}_joined.mp3")
-            self._concat_audio_files([p['path'] for p in parts], joined_mp3, target_format='mp3')
-
-            final_path, final_fmt = finalize_output_from_mp3(joined_mp3, captions=captions if self.text_overlay_enabled else None)
-            self._safe_rmtree(work_dir)
-            return {
-                'success': True,
-                'file_path': final_path,
-                'file_url': f"/download-voiceover/{os.path.basename(final_path)}",
-                'format': final_fmt,
-                'duration': self._get_audio_duration(final_path)
-            }
+            except Exception as e:
+                print(f"Error generating speech: {str(e)}")
+                self._safe_rmtree(work_dir)
+                raise Exception(f"Failed to generate voiceover: {str(e)}")
         except Exception as e:
             print(f"Error generating speech: {str(e)}")
             self._safe_rmtree(work_dir)

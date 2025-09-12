@@ -151,6 +151,127 @@
                     </div>
                 </div>
 
+                <!-- YouTube Shorts Generator Section -->
+                <div class="card shadow-lg mb-4">
+                    <div class="card-header bg-danger text-white">
+                        <h4 class="mb-0">
+                            <i class="fab fa-youtube me-2"></i>
+                            YouTube Shorts Generator
+                        </h4>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <p class="mb-0">
+                                    <i class="fas fa-info-circle me-2 text-danger"></i>
+                                    Create multiple YouTube Shorts videos from a single script. Split your script using "— pause —" markers to generate separate short videos in portrait format (9:16 ratio).
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                <button class="btn btn-danger" id="show-shorts-generator-btn">
+                                    <i class="fab fa-youtube me-2"></i>Create Shorts Now
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- YouTube Shorts Panel (hidden by default) -->
+                        <div id="shorts-generator-panel" style="display: none;">
+                            <hr class="my-4">
+                            
+                            <!-- Script Input -->
+                            <div class="mb-4">
+                                <label for="shorts-script-text" class="form-label">
+                                    <i class="fas fa-script me-2"></i>Enter Script for YouTube Shorts
+                                </label>
+                                <textarea class="form-control" id="shorts-script-text" rows="8" 
+                                    placeholder="Enter your script here. Use '— pause —' to split into multiple shorts.
+
+Example:
+Welcome to today's market update. The stock market showed significant gains today.
+— pause —
+Technology stocks led the rally with major companies posting strong earnings.
+— pause —
+Looking ahead, investors are optimistic about the upcoming quarter."></textarea>
+                                <small class="text-muted">
+                                    <i class="fas fa-lightbulb me-1"></i>
+                                    <strong>Tip:</strong> Each "— pause —" marker will create a separate YouTube Short video. 
+                                    If you have 3 pause markers, you'll get 4 separate videos.
+                                </small>
+                            </div>
+
+                            <!-- Voice Settings for Shorts -->
+                            <div class="row mb-4">
+                                <div class="col-md-6">
+                                    <label for="shorts-voice-select" class="form-label">
+                                        <i class="fas fa-user-alt me-2"></i>Voice Type
+                                    </label>
+                                    <select class="form-control" id="shorts-voice-select">
+                                        <option value="alloy">Alloy (Neutral)</option>
+                                        <option value="echo">Echo (Deep)</option>
+                                        <option value="fable">Fable (Expressive)</option>
+                                        <option value="onyx">Onyx (Professional)</option>
+                                        <option value="nova" selected>Nova (Clear)</option>
+                                        <option value="shimmer">Shimmer (Warm)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="shorts-speed-select" class="form-label">
+                                        <i class="fas fa-tachometer-alt me-2"></i>Speech Speed
+                                    </label>
+                                    <select class="form-control" id="shorts-speed-select">
+                                        <option value="0.7">Slow (0.7x)</option>
+                                        <option value="1.0" selected>Normal (1.0x)</option>
+                                        <option value="1.2">Fast (1.2x)</option>
+                                        <option value="1.5">Very Fast (1.5x)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <!-- Background Image for Shorts -->
+                            <div class="form-group mb-4">
+                                <label for="shorts-background-image">
+                                    <i class="fas fa-image me-2"></i>Background Image (optional)
+                                </label>
+                                <input type="file" id="shorts-background-image" name="shorts-background-image" accept="image/*" class="form-control">
+                                <small class="form-text text-muted">
+                                    Recommended: Portrait format image (9:16 ratio) for best results. Supported formats: JPG, PNG
+                                </small>
+                            </div>
+                            
+                            <!-- Generate Button -->
+                            <div class="text-center mb-3">
+                                <button class="btn btn-danger btn-lg" id="generate-shorts-btn">
+                                    <i class="fab fa-youtube me-2"></i>Generate YouTube Shorts
+                                </button>
+                            </div>
+
+                            <!-- Progress Section -->
+                            <div id="shorts-progress" style="display: none;">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0">
+                                        <i class="fas fa-video me-2"></i>
+                                        Generating YouTube Shorts...
+                                    </h6>
+                                    <span class="badge bg-danger" id="shorts-status">Processing</span>
+                                </div>
+                                <div class="progress mb-2">
+                                    <div class="progress-bar bg-danger" id="shorts-progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                                <small class="text-muted" id="shorts-message">Preparing shorts generation...</small>
+                            </div>
+
+                            <!-- Results Section -->
+                            <div id="shorts-result" style="display: none;">
+                                <hr class="my-4">
+                                <h5><i class="fab fa-youtube me-2"></i>Generated YouTube Shorts</h5>
+                                <div id="shorts-videos-container" class="row">
+                                    <!-- Generated shorts will be displayed here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Upload and Processing Section -->
                 <div class="card shadow-lg mb-4" id="upload-section">
                     <div class="card-header bg-primary text-white">
