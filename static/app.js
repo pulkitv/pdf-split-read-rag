@@ -607,7 +607,7 @@ function initYoutubeShortsHandlers() {
       setText('shorts-message', 'YouTube Shorts generated successfully!');
       
       // Show results
-      displayShortsResults(data.videos || []);
+      displayShortsResults(data.videos || [], data.zip_url || null);
       
       setTimeout(() => {
         setDisplay('shorts-progress', false);
@@ -638,7 +638,7 @@ function initYoutubeShortsHandlers() {
 }
 
 // Display YouTube Shorts results
-function displayShortsResults(videos) {
+function displayShortsResults(videos, zipUrl = null) {
   const resultsContainer = $('shorts-result');
   const videosContainer = $('shorts-videos-container');
   
@@ -650,7 +650,44 @@ function displayShortsResults(videos) {
     return;
   }
   
-  let html = '<div class="row">';
+  let html = '';
+  
+  // Add "Download All" section if zip URL is provided
+  if (zipUrl) {
+    html += `
+      <div class="alert alert-success d-flex align-items-center mb-4">
+        <i class="fas fa-check-circle me-3 fs-4"></i>
+        <div class="flex-grow-1">
+          <h6 class="mb-1">Successfully generated ${videos.length} YouTube Shorts!</h6>
+          <small class="text-muted">All videos are ready for download individually or as a complete package.</small>
+        </div>
+      </div>
+      
+      <div class="card bg-light mb-4">
+        <div class="card-body text-center">
+          <h6 class="card-title">
+            <i class="fas fa-archive me-2 text-primary"></i>
+            Download All Videos
+          </h6>
+          <p class="card-text text-muted mb-3">
+            Get all ${videos.length} YouTube Shorts videos in a single ZIP file for easy sharing and storage.
+          </p>
+          <a href="${zipUrl}" class="btn btn-primary btn-lg">
+            <i class="fas fa-download me-2"></i>
+            Download All Shorts (ZIP)
+          </a>
+        </div>
+      </div>
+      
+      <hr class="my-4">
+      <h6 class="mb-3">
+        <i class="fab fa-youtube me-2 text-danger"></i>
+        Individual Videos
+      </h6>
+    `;
+  }
+  
+  html += '<div class="row">';
   
   videos.forEach((video, index) => {
     html += `

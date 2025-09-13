@@ -24,8 +24,7 @@ app.config['TEMP_FOLDER'] = os.getenv('TEMP_FOLDER', 'temp')
 app.config['PROCESSED_FOLDER'] = os.getenv('PROCESSED_FOLDER', 'processed')
 
 # Configure Flask URL generation for background threads
-# Comment out SERVER_NAME as it can cause routing issues
-# app.config['SERVER_NAME'] = os.getenv('SERVER_NAME', 'localhost:5000')
+app.config['SERVER_NAME'] = os.getenv('SERVER_NAME', 'localhost:5000')
 app.config['APPLICATION_ROOT'] = os.getenv('APPLICATION_ROOT', '/')
 app.config['PREFERRED_URL_SCHEME'] = os.getenv('PREFERRED_URL_SCHEME', 'http')
 
@@ -852,7 +851,7 @@ def generate_shorts():
 
         # Generate a portrait MP4 for each segment
         outputs = []
-        file_paths = []  # list of tuples (idx, path, title)
+        file_paths = []  # list of tuples (idx, path, actual_download_name)
         
         for idx, seg in enumerate(segments, start=1):
             # Calculate progress for this segment
@@ -867,13 +866,66 @@ def generate_shorts():
             
             print(f"Generating segment {idx}/{len(segments)}: {seg[:50]}...")
             
+            # Generate a meaningful filename from the segment content
+            def create_meaningful_filename(text_content, segment_index):
+                """Create a descriptive filename from the text content"""
+                if not text_content:
+                    return f"short_{segment_index:02d}"
+                
+                # Clean the text and extract key words
+                import re
+                
+                # Remove common filler words and get the essence
+                text = text_content.strip()
+                
+                # Take first 2-3 meaningful words or first sentence
+                sentences = re.split(r'[.!?]+', text)
+                first_sentence = sentences[0].strip() if sentences else text
+                
+                # Extract meaningful words (skip common filler words)
+                filler_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those'}
+                
+                words = re.findall(r'\b\w+\b', first_sentence.lower())
+                meaningful_words = [word for word in words if word not in filler_words and len(word) > 2]
+                
+                if meaningful_words:
+                    # Take first 3-4 meaningful words
+                    key_words = meaningful_words[:4]
+                    filename = '_'.join(key_words).title()
+                    
+                    # Limit length and clean
+                    if len(filename) > 40:
+                        filename = filename[:40]
+                    
+                    # Clean up any remaining problematic characters
+                    filename = re.sub(r'[^\w\-_]', '', filename)
+                    
+                    if len(filename) > 3:  # Ensure we have a meaningful name
+                        return filename
+                
+                # Fallback: use first few words directly
+                words = first_sentence.split()[:3]
+                if words:
+                    filename = '_'.join(words)
+                    filename = re.sub(r'[^\w\s-]', '', filename)
+                    filename = re.sub(r'[-\s]+', '_', filename)
+                    if len(filename) > 3:
+                        return filename[:40]
+                
+                # Final fallback
+                return f"short_{segment_index:02d}"
+            
+            # Create meaningful filename for this segment
+            custom_filename = create_meaningful_filename(seg, idx)
+            
             res = voiceover_system.generate_speech(
                 text=seg,
                 voice=voice,
                 speed=speed,
                 format='mp4',
                 session_id=None,
-                background_image_path=temp_bg_path
+                background_image_path=temp_bg_path,
+                custom_filename=custom_filename  # Pass our custom filename
             )
             
             if not res.get('success'):
@@ -887,20 +939,21 @@ def generate_shorts():
 
             print(f"Successfully generated segment {idx}")
 
-            # Capture the suggested download title for consistent naming
-            seg_title = res.get('download_title') or f"short_{idx:02d}"
+            # Use the custom filename we created for consistency
+            actual_download_name = f"{custom_filename}.mp4"
+            
             outputs.append({
                 'index': idx,
                 'file_url': res['file_url'],
                 'duration': res.get('duration'),
                 'format': res.get('format', 'mp4'),
-                # Optional: echo the actual download name used for individual downloads
-                'download_name': seg_title + '.mp4'
+                'download_name': actual_download_name  # Consistent naming
             })
-            # Keep actual file path and title for zipping
+            
+            # Store file path with the exact download name for ZIP creation
             fp = res.get('file_path')
             if fp and os.path.exists(fp):
-                file_paths.append((idx, fp, seg_title))
+                file_paths.append((idx, fp, actual_download_name))
 
         # Emit progress for zip creation
         socketio.emit('progress_update', {
@@ -910,7 +963,7 @@ def generate_shorts():
             'message': 'Creating download package...'
         })
 
-        # Create a zip with all generated MP4s for one-click download
+        # Create a zip with all generated MP4s using exact same filenames as individual downloads
         os.makedirs(voiceover_system.output_folder, exist_ok=True)
         zip_name = f"shorts_{uuid.uuid4()}.zip"
         zip_path = os.path.join(voiceover_system.output_folder, zip_name)
@@ -918,23 +971,26 @@ def generate_shorts():
         
         print(f"Creating zip file: {zip_path}")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for idx, fp, title in file_paths:
-                # Sanitize and ensure uniqueness; match individual download naming
-                base = secure_filename(title) or f"short_{idx:02d}"
-                # Remove any trailing extension from base if present
-                if base.lower().endswith('.mp4'):
-                    base = base[:-4]
-                candidate = f"{base}.mp4"
-                suffix = 2
-                while candidate in used_names:
-                    candidate = f"{base}-{suffix}.mp4"
-                    suffix += 1
-                used_names.add(candidate)
+            for idx, fp, actual_download_name in file_paths:
+                # Use the exact same filename as individual downloads
+                zip_filename = actual_download_name
+                
+                # Handle duplicate names (rare but possible)
+                if zip_filename in used_names:
+                    base_name = os.path.splitext(zip_filename)[0]
+                    ext = os.path.splitext(zip_filename)[1]
+                    suffix = 2
+                    while f"{base_name}-{suffix}{ext}" in used_names:
+                        suffix += 1
+                    zip_filename = f"{base_name}-{suffix}{ext}"
+                
+                used_names.add(zip_filename)
+                
                 try:
-                    zf.write(fp, candidate)
-                    print(f"Added {candidate} to zip")
+                    zf.write(fp, zip_filename)
+                    print(f"Added {zip_filename} to zip (matches individual download name)")
                 except Exception as e:
-                    print(f"Error adding {candidate} to zip: {e}")
+                    print(f"Error adding {zip_filename} to zip: {e}")
                     pass
         
         # Build a friendly suggested name with date

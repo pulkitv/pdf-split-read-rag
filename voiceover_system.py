@@ -271,27 +271,7 @@ class VoiceoverSystem:
         if client is None:
             raise Exception("OpenAI client not configured. Please set OPENAI_API_KEY environment variable.")
 
-        try:
-            # Try streaming API first
-            ws = getattr(getattr(client, 'audio').speech, 'with_streaming_response', None)
-            if ws is not None:
-                try:
-                    with client.audio.speech.with_streaming_response.create(
-                        model="tts-1-hd",
-                        voice=voice,
-                        input=text,
-                        speed=speed,
-                    ) as response:
-                        response.stream_to_file(out_path)
-                        return
-                except AttributeError:
-                    pass
-                except Exception as e:
-                    print(f"TTS streaming failed, falling back to non-streaming: {e}")
-        except Exception:
-            pass
-
-        # Non-streaming fallback
+        # Create TTS request
         resp = client.audio.speech.create(
             model="tts-1-hd",
             voice=voice,
@@ -299,6 +279,7 @@ class VoiceoverSystem:
             speed=speed,
         )
 
+        # Check if response has stream_to_file method
         if hasattr(resp, 'stream_to_file') and callable(getattr(resp, 'stream_to_file')):
             resp.stream_to_file(out_path)
             return
