@@ -1,15 +1,29 @@
-# YouTube Shorts API Integration Guide
+# API Integration Guide
 
-This guide provides complete instructions for integrating with the YouTube Shorts Generation API to create automated video content from text scripts.
+This guide provides complete instructions for integrating with both the YouTube Shorts Generation API and the Regular Format Voiceover API to create automated video content from text scripts.
 
 ## Overview
 
-The YouTube Shorts API allows you to:
+The APIs allow you to:
+
+### YouTube Shorts API
 - Generate multiple short videos from a single script
 - Split content using pause markers (`— pause —`)
-- Customize voice and speech speed
+- Create portrait 1080x1920 videos optimized for social media
 - Download individual videos or bulk ZIP files
-- Track generation progress in real-time
+
+### Regular Format Voiceover API (NEW!)
+- Generate single landscape 1920x1080 videos from scripts
+- Perfect for presentations, tutorials, and general content
+- Direct MP4/MP3/WAV file downloads
+- No script splitting - treats entire text as one video
+- Supports multiple output formats
+
+Both APIs support:
+- Voice customization and speech speed control
+- Real-time progress tracking
+- Background image integration
+- Webhook notifications (optional)
 
 ## Quick Start
 
@@ -118,6 +132,159 @@ Currently no authentication required (add API keys if needed in production).
   "updated_at": "2025-09-14T13:54:02.789Z"
 }
 ```
+
+### 3. Generate Regular Format Voiceover
+
+**Endpoint:** `POST /api/v1/voiceover/generate`
+
+**Request:**
+```json
+{
+  "script": "Welcome to our quarterly business review. Today we'll discuss market performance, key achievements, and strategic initiatives for the upcoming quarter.",
+  "voice": "nova",
+  "speed": 1.0,
+  "format": "mp4",
+  "background_image_url": "https://example.com/background.jpg",
+  "webhook_url": "https://your-domain.com/webhook/voiceover-complete"
+}
+```
+
+**Parameters:**
+- `script` (required): Text content to convert to voiceover (no pause markers needed)
+- `voice` (optional): Voice type - nova, alloy, echo, fable, onyx, shimmer (default: "nova")
+- `speed` (optional): Speech speed 0.25-4.0 (default: 1.0)
+- `format` (optional): Output format - mp3, wav, mp4 (default: "mp4")
+- `background_image_url` (optional): URL to background image for video
+- `webhook_url` (optional): URL for completion notification
+
+**Response:**
+```json
+{
+  "success": true,
+  "session_id": "api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f",
+  "message": "Voiceover generation started",
+  "status_url": "/api/v1/voiceover/status/api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f"
+}
+```
+
+### 4. Check Voiceover Status
+
+**Endpoint:** `GET /api/v1/voiceover/status/{session_id}`
+
+**Response (Processing):**
+```json
+{
+  "session_id": "api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f",
+  "status": "processing",
+  "progress": 65,
+  "message": "Generating video with audio waveform...",
+  "script": "Welcome to our quarterly business review...",
+  "voice": "nova",
+  "speed": 1.0,
+  "format": "mp4",
+  "created_at": "2025-09-15T14:30:15.234Z"
+}
+```
+
+**Response (Completed):**
+```json
+{
+  "session_id": "api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f",
+  "status": "completed",
+  "progress": 100,
+  "message": "Voiceover generation completed successfully!",
+  "result": {
+    "file_url": "https://your-domain.com/download-voiceover/quarterly_review_7f3b2a18.mp4",
+    "filename": "quarterly_review_7f3b2a18.mp4",
+    "duration": 45.6,
+    "format": "mp4",
+    "file_size": "12.8 MB"
+  },
+  "script": "Welcome to our quarterly business review...",
+  "voice": "nova",
+  "speed": 1.0,
+  "format": "mp4",
+  "created_at": "2025-09-15T14:30:15.234Z"
+}
+```
+
+**Response (Failed):**
+```json
+{
+  "session_id": "api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f",
+  "status": "failed",
+  "progress": 30,
+  "message": "Generation failed: Unsupported format",
+  "error": "Format 'avi' not supported. Use: mp3, wav, mp4",
+  "created_at": "2025-09-15T14:30:15.234Z"
+}
+```
+
+### 5. Direct Download
+
+**Endpoint:** `GET /api/v1/voiceover/download/{session_id}`
+
+**Response:** Direct file download (MP4/MP3/WAV)
+- Returns the generated file directly with proper MIME type headers
+- No ZIP compression for single files
+- Original filename preserved in download headers
+- Enhanced error handling with detailed logging for troubleshooting
+
+**Success Response:**
+- Status: `200 OK`
+- Content-Type: `video/mp4`, `audio/mpeg`, or `audio/wav` based on format
+- Content-Disposition: `attachment; filename="original_filename.ext"`
+- Body: Binary file data
+
+**Error Responses:**
+```json
+// Session not found
+{
+  "error": "Session not found"
+}
+// Status: 404
+
+// Generation not completed
+{
+  "error": "Generation not completed yet"
+}
+// Status: 400
+
+// File not available
+{
+  "error": "No file URL available"
+}
+// Status: 404
+
+// File missing from disk
+{
+  "error": "Generated file not found"
+}
+// Status: 404
+
+// Server error with details
+{
+  "error": "Download failed: [specific error message]"
+}
+// Status: 500
+```
+
+**Enhanced Error Handling:**
+The download endpoint now includes comprehensive error logging and debugging information:
+- Validates session existence before processing
+- Checks generation completion status
+- Verifies file URL availability in session data
+- Handles multiple URL formats (direct paths, API endpoints)
+- Confirms file existence on disk before serving
+- Provides detailed server-side logging for troubleshooting
+- Lists available files when target file is missing (for debugging)
+
+**URL Format Handling:**
+The endpoint now properly handles various stored URL formats:
+- `/download-voiceover/filename.mp4` (standard format)
+- `/api/v1/voiceover/download/session_id` (recursive references)
+- Direct filenames without path prefixes
+- Malformed URLs with graceful fallback parsing
 
 ## Request Parameters
 
@@ -298,6 +465,175 @@ if __name__ == "__main__":
         print(f"❌ Error: {e}")
 ```
 
+### Python Client for Regular Voiceover
+
+```python
+import requests
+import time
+import logging
+
+class RegularVoiceoverAPI:
+    def __init__(self, base_url):
+        self.base_url = base_url.rstrip('/')
+        self.logger = logging.getLogger(__name__)
+    
+    def generate_voiceover(self, script, voice="nova", speed=1.0, format_type="mp4", 
+                          background_image_url=None, webhook_url=None, timeout=300):
+        """
+        Generate regular format voiceover from script.
+        
+        Args:
+            script (str): Text content to convert to voiceover
+            voice (str): Voice to use (nova, alloy, echo, fable, onyx, shimmer)
+            speed (float): Speech speed (0.25 to 4.0)
+            format_type (str): Output format (mp3, wav, mp4)
+            background_image_url (str): Optional background image URL
+            webhook_url (str): Optional webhook for completion notification
+            timeout (int): Maximum wait time in seconds
+            
+        Returns:
+            dict: Final result with file URL and details
+        """
+        try:
+            # Step 1: Start generation
+            self.logger.info(f"Starting voiceover generation for script: {script[:50]}...")
+            
+            payload = {
+                "script": script,
+                "voice": voice,
+                "speed": speed,
+                "format": format_type
+            }
+            
+            if background_image_url:
+                payload["background_image_url"] = background_image_url
+            if webhook_url:
+                payload["webhook_url"] = webhook_url
+            
+            response = requests.post(
+                f"{self.base_url}/api/v1/voiceover/generate",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            if response.status_code != 202:
+                raise Exception(f"API request failed: {response.status_code} - {response.text}")
+            
+            data = response.json()
+            if not data.get('success'):
+                raise Exception(f"API error: {data.get('error', 'Unknown error')}")
+            
+            session_id = data['session_id']
+            self.logger.info(f"Generation started. Session ID: {session_id}")
+            
+            # Step 2: Poll for completion
+            start_time = time.time()
+            last_progress = -1
+            
+            while time.time() - start_time < timeout:
+                try:
+                    status_response = requests.get(
+                        f"{self.base_url}/api/v1/voiceover/status/{session_id}",
+                        timeout=10
+                    )
+                    
+                    if status_response.status_code != 200:
+                        self.logger.warning(f"Status check failed: {status_response.status_code}")
+                        time.sleep(5)
+                        continue
+                    
+                    status_data = status_response.json()
+                    current_status = status_data.get('status')
+                    progress = status_data.get('progress', 0)
+                    message = status_data.get('message', '')
+                    
+                    # Log progress updates
+                    if progress != last_progress:
+                        self.logger.info(f"Progress: {progress}% - {message}")
+                        last_progress = progress
+                    
+                    if current_status == 'completed':
+                        self.logger.info("Voiceover generation completed!")
+                        return status_data
+                    
+                    elif current_status == 'failed':
+                        error_msg = status_data.get('error', 'Unknown error')
+                        raise Exception(f"Generation failed: {error_msg}")
+                    
+                    # Wait before next poll
+                    time.sleep(3)
+                    
+                except requests.RequestException as e:
+                    self.logger.warning(f"Status check request failed: {e}")
+                    time.sleep(5)
+            
+            raise TimeoutError(f"Generation timed out after {timeout} seconds")
+            
+        except Exception as e:
+            self.logger.error(f"Voiceover generation failed: {e}")
+            raise
+    
+    def download_file(self, session_id, output_path):
+        """Download the generated voiceover file directly."""
+        try:
+            self.logger.info(f"Downloading file for session: {session_id}")
+            
+            response = requests.get(
+                f"{self.base_url}/api/v1/voiceover/download/{session_id}", 
+                stream=True, 
+                timeout=60
+            )
+            response.raise_for_status()
+            
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            self.logger.info(f"File downloaded successfully: {output_path}")
+            return output_path
+            
+        except Exception as e:
+            self.logger.error(f"File download failed: {e}")
+            raise
+
+# Usage Example
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    
+    api = RegularVoiceoverAPI("https://your-domain.com")
+    
+    script = """
+    Welcome to our quarterly business review. In this presentation, we'll cover 
+    our market performance, key achievements, and strategic initiatives for Q4. 
+    Our revenue growth this quarter exceeded expectations, with a 12% increase 
+    compared to the same period last year. We've successfully launched three 
+    new products and expanded into two additional markets.
+    """
+    
+    try:
+        result = api.generate_voiceover(
+            script=script,
+            voice="nova",
+            speed=1.1,
+            format_type="mp4",
+            background_image_url="https://example.com/corporate-bg.jpg",
+            timeout=300
+        )
+        
+        print(f"✅ Voiceover generated successfully!")
+        print(f"📄 File: {result['result']['filename']}")
+        print(f"⏱️ Duration: {result['result']['duration']}s")
+        print(f"📦 Size: {result['result']['file_size']}")
+        print(f"🔗 URL: {result['result']['file_url']}")
+        
+        # Download the file
+        api.download_file(result['session_id'], f"output.{result['result']['format']}")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+```
+
 ### JavaScript/Node.js Client Example
 
 ```javascript
@@ -434,6 +770,173 @@ async function main() {
         result.videos.forEach(video => {
             console.log(`🎥 Video ${video.index}: ${video.download_name} (${video.duration}s)`);
         });
+        
+    } catch (error) {
+        console.error('❌ Error:', error.message);
+    }
+}
+
+main();
+```
+
+### JavaScript/Node.js Client for Regular Voiceover
+
+```javascript
+const axios = require('axios');
+const fs = require('fs');
+
+class RegularVoiceoverAPI {
+    constructor(baseUrl) {
+        this.baseUrl = baseUrl.replace(/\/$/, '');
+    }
+    
+    async generateVoiceover(script, options = {}) {
+        const {
+            voice = 'nova',
+            speed = 1.0,
+            format = 'mp4',
+            backgroundImageUrl = null,
+            webhookUrl = null,
+            timeout = 300000
+        } = options;
+        
+        try {
+            console.log(`🎙️ Starting voiceover generation...`);
+            
+            // Step 1: Start generation
+            const payload = {
+                script,
+                voice,
+                speed,
+                format
+            };
+            
+            if (backgroundImageUrl) payload.background_image_url = backgroundImageUrl;
+            if (webhookUrl) payload.webhook_url = webhookUrl;
+            
+            const startResponse = await axios.post(
+                `${this.baseUrl}/api/v1/voiceover/generate`,
+                payload,
+                {
+                    headers: { 'Content-Type': 'application/json' },
+                    timeout: 30000
+                }
+            );
+            
+            if (!startResponse.data.success) {
+                throw new Error(`API error: ${startResponse.data.error}`);
+            }
+            
+            const sessionId = startResponse.data.session_id;
+            console.log(`📋 Session ID: ${sessionId}`);
+            
+            // Step 2: Poll for completion
+            const startTime = Date.now();
+            let lastProgress = -1;
+            
+            while (Date.now() - startTime < timeout) {
+                try {
+                    const statusResponse = await axios.get(
+                        `${this.baseUrl}/api/v1/voiceover/status/${sessionId}`,
+                        { timeout: 10000 }
+                    );
+                    
+                    const statusData = statusResponse.data;
+                    const { status, progress, message } = statusData;
+                    
+                    // Log progress updates
+                    if (progress !== lastProgress) {
+                        console.log(`📈 Progress: ${progress}% - ${message}`);
+                        lastProgress = progress;
+                    }
+                    
+                    if (status === 'completed') {
+                        console.log(`✅ Voiceover generation completed!`);
+                        return statusData;
+                    }
+                    
+                    if (status === 'failed') {
+                        throw new Error(`Generation failed: ${statusData.error}`);
+                    }
+                    
+                    // Wait before next poll
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                } catch (error) {
+                    if (error.code === 'ECONNABORTED') {
+                        console.warn('⚠️ Status check timeout, retrying...');
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            
+            throw new Error(`Generation timed out after ${timeout}ms`);
+            
+        } catch (error) {
+            console.error(`❌ Voiceover generation failed:`, error.message);
+            throw error;
+        }
+    }
+    
+    async downloadFile(sessionId, outputPath) {
+        try {
+            console.log(`📥 Downloading file for session: ${sessionId}`);
+            
+            const response = await axios.get(
+                `${this.baseUrl}/api/v1/voiceover/download/${sessionId}`,
+                {
+                    responseType: 'stream',
+                    timeout: 60000
+                }
+            );
+            
+            const writer = fs.createWriteStream(outputPath);
+            response.data.pipe(writer);
+            
+            return new Promise((resolve, reject) => {
+                writer.on('finish', () => {
+                    console.log(`✅ File downloaded: ${outputPath}`);
+                    resolve(outputPath);
+                });
+                writer.on('error', reject);
+            });
+            
+        } catch (error) {
+            console.error(`❌ File download failed:`, error.message);
+            throw error;
+        }
+    }
+}
+
+// Usage Example
+async function main() {
+    const api = new RegularVoiceoverAPI('https://your-domain.com');
+    
+    const script = `
+        Good morning everyone and welcome to our quarterly business review.
+        Today's agenda includes market analysis, product updates, and our
+        strategic roadmap for the next quarter. We're excited to share
+        our achievements and outline our vision for continued growth.
+    `;
+    
+    try {
+        const result = await api.generateVoiceover(script, {
+            voice: 'nova',
+            speed: 1.1,
+            format: 'mp4',
+            backgroundImageUrl: 'https://example.com/presentation-bg.jpg'
+        });
+        
+        console.log(`🎉 Success! Generated voiceover`);
+        console.log(`📄 Filename: ${result.result.filename}`);
+        console.log(`⏱️ Duration: ${result.result.duration}s`);
+        console.log(`📦 File Size: ${result.result.file_size}`);
+        console.log(`🔗 Download URL: ${result.result.file_url}`);
+        
+        // Download the file
+        await api.downloadFile(result.session_id, `output.${result.result.format}`);
         
     } catch (error) {
         console.error('❌ Error:', error.message);

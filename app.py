@@ -60,8 +60,14 @@ pdf_processor = PDFProcessor(
 rag_system = RAGSystem()
 voiceover_system = VoiceoverSystem()
 
-# Store processing sessions
+# Store processing sessions and API sessions
 processing_sessions = {}
+
+# Initialize API session storage for Shorts API
+api_sessions = {}
+
+# Initialize API session storage for Voiceover API
+api_voiceover_sessions = {}
 
 @app.route('/')
 def index():
@@ -119,6 +125,610 @@ def upload_file():
         'filename': filename,
         'mode': processing_mode
     })
+
+@app.route('/download/<session_id>')
+def download_file(session_id):
+    """Download processed PDF file"""
+    if session_id not in processing_sessions:
+        return jsonify({'error': 'Invalid session ID'}), 404
+    
+    session = processing_sessions[session_id]
+    if session['status'] != 'completed':
+        return jsonify({'error': 'Processing not completed'}), 400
+    
+    merged_file = session.get('merged_file')
+    if not merged_file or not os.path.exists(merged_file):
+        return jsonify({'error': 'Processed file not found'}), 404
+    
+    return send_file(merged_file, as_attachment=True, 
+                    download_name=f"processed_{session['filename']}")
+
+@app.route('/summarize', methods=['POST'])
+def summarize_text():
+    """Generate AI summary of processed document"""
+    data = request.get_json()
+    session_id = data.get('session_id')
+    query = data.get('query', 'Please provide a comprehensive summary of this document')
+    
+    if not session_id or session_id not in processing_sessions:
+        return jsonify({'error': 'Invalid session ID'}), 404
+    
+    session = processing_sessions[session_id]
+    if session['status'] != 'completed':
+        return jsonify({'error': 'Processing not completed'}), 400
+    
+    try:
+        # Use RAG system to generate summary
+        summary = rag_system.generate_summary(session_id, query)
+        return jsonify({
+            'success': True,
+            'summary': summary,
+            'query': query
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'Failed to generate summary: {str(e)}'
+        }), 500
+
+@app.route('/generate-voiceover', methods=['POST'])
+def generate_voiceover():
+    """Generate voiceover from text using WebSocket progress tracking"""
+    try:
+        data = request.get_json()
+        print(f"Received voiceover request: {data}")
+        
+        # Validate required fields
+        text = data.get('text', '').strip()
+        if not text:
+            return jsonify({'error': 'Text is required'}), 400
+        
+        # Get optional parameters with defaults
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        format_type = data.get('format', 'mp3')
+        background_image = request.files.get('background_image')
+        generation_type = data.get('generation_type', 'youtube_shorts')  # Default to YouTube Shorts
+        
+        # Validate format
+        if format_type not in voiceover_system.supported_formats:
+            return jsonify({'error': f'Unsupported format. Use: {", ".join(voiceover_system.supported_formats)}'}), 400
+        
+        # Validate voice
+        if voice not in voiceover_system.available_voices:
+            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
+        
+        # Validate speed
+        if not (0.25 <= speed <= 4.0):
+            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
+        
+        # Validate generation_type
+        valid_types = ['youtube_shorts', 'shorts', 'regular', 'standalone']
+        if generation_type not in valid_types:
+            return jsonify({'error': f'Invalid generation_type. Use: {", ".join(valid_types)}'}), 400
+        
+        # Handle background image upload
+        background_image_path = None
+        if background_image and background_image.filename:
+            filename = secure_filename(background_image.filename)
+            if filename and filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                background_image_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{filename}")
+                background_image.save(background_image_path)
+                print(f"Background image saved: {background_image_path}")
+        
+        # Generate session ID for tracking
+        session_id = str(uuid.uuid4())
+        
+        # Start background processing
+        def background_voiceover_generation():
+            try:
+                with app.app_context():
+                    print(f"Starting background voiceover generation for session: {session_id}")
+                    
+                    # Generate voiceover
+                    result = voiceover_system.generate_speech(
+                        text=text,
+                        voice=voice,
+                        speed=speed,
+                        format=format_type,
+                        session_id=session_id,
+                        background_image_path=background_image_path,
+                        generation_type=generation_type
+                    )
+                    
+                    if result['success']:
+                        # Emit completion event
+                        socketio.emit('voiceover_complete', {
+                            'session_id': session_id,
+                            'file_url': result['file_url'],
+                            'duration': result.get('duration'),
+                            'format': result.get('format'),
+                            'message': 'Voiceover generated successfully!'
+                        }, to=session_id)
+                        print(f"Voiceover completed for session: {session_id}")
+                    else:
+                        # Emit error event
+                        socketio.emit('voiceover_error', {
+                            'session_id': session_id,
+                            'error': result.get('error', 'Unknown error')
+                        }, to=session_id)
+                        print(f"Voiceover failed for session: {session_id}")
+                    
+                    # Cleanup background image
+                    if background_image_path and os.path.exists(background_image_path):
+                        try:
+                            os.remove(background_image_path)
+                        except Exception:
+                            pass
+                            
+            except Exception as e:
+                print(f"Background voiceover error: {e}")
+                socketio.emit('voiceover_error', {
+                    'session_id': session_id,
+                    'error': str(e)
+                }, to=session_id)
+                
+                # Cleanup on error
+                if background_image_path and os.path.exists(background_image_path):
+                    try:
+                        os.remove(background_image_path)
+                    except Exception:
+                        pass
+        
+        # Start background thread
+        thread = threading.Thread(target=background_voiceover_generation)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'message': 'Voiceover generation started. Listen for WebSocket events for progress.'
+        })
+        
+    except Exception as e:
+        print(f"Voiceover generation error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/download-voiceover/<filename>')
+def download_voiceover(filename):
+    """Download generated voiceover files"""
+    try:
+        # Security check: ensure filename is safe
+        safe_filename = secure_filename(filename)
+        if safe_filename != filename:
+            return jsonify({'error': 'Invalid filename'}), 400
+        
+        file_path = os.path.join(voiceover_system.output_folder, safe_filename)
+        
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        # Get file info
+        file_info = voiceover_system.get_file_info(safe_filename)
+        if not file_info:
+            return jsonify({'error': 'Unable to read file information'}), 500
+        
+        # Determine MIME type based on file extension
+        ext = os.path.splitext(safe_filename)[1].lower()
+        if ext == '.mp3':
+            mimetype = 'audio/mpeg'
+        elif ext == '.wav':
+            mimetype = 'audio/wav'
+        elif ext == '.mp4':
+            mimetype = 'video/mp4'
+        elif ext == '.zip':
+            mimetype = 'application/zip'
+        else:
+            mimetype = 'application/octet-stream'
+        
+        return send_file(
+            file_path,
+            mimetype=mimetype,
+            as_attachment=True,
+            download_name=safe_filename
+        )
+        
+    except Exception as e:
+        print(f"Download error: {e}")
+        return jsonify({'error': 'Download failed'}), 500
+
+# YouTube Shorts API Endpoints
+@app.route('/api/v1/generate-shorts', methods=['POST'])
+def api_generate_shorts_alt():
+    """Alternative API endpoint to generate YouTube Shorts videos from script (for backward compatibility)"""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        script = data.get('script', '').strip()
+        if not script:
+            return jsonify({'error': 'Script is required'}), 400
+        
+        # Validate optional parameters
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        background_image_url = data.get('background_image_url')
+        webhook_url = data.get('webhook_url')
+        
+        # Validation
+        if voice not in voiceover_system.available_voices:
+            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
+        
+        if not (0.25 <= speed <= 4.0):
+            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
+        
+        # Generate session ID
+        session_id = f"api_{uuid.uuid4()}"
+        
+        # Initialize session tracking
+        api_sessions[session_id] = {
+            'status': 'queued',
+            'progress': 0,
+            'message': 'Request queued for processing...',
+            'script': script,
+            'voice': voice,
+            'speed': speed,
+            'background_image_url': background_image_url,
+            'webhook_url': webhook_url,
+            'created_at': datetime.now().isoformat(),
+            'estimated_segments': len(script.split('— pause —')) if '— pause —' in script else len(script.split('\n\n')),
+            'current_segment': 0
+        }
+        
+        # Start background processing
+        thread = threading.Thread(
+            target=process_api_shorts_async,
+            args=(session_id, script, voice, speed, background_image_url, webhook_url)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'message': 'YouTube Shorts generation started',
+            'status_url': f'/api/v1/shorts/status/{session_id}',
+            'estimated_segments': api_sessions[session_id]['estimated_segments']
+        }), 202
+        
+    except Exception as e:
+        print(f"API Shorts Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/shorts/generate', methods=['POST'])
+def api_generate_shorts():
+    """API endpoint to generate YouTube Shorts videos from script"""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        script = data.get('script', '').strip()
+        if not script:
+            return jsonify({'error': 'Script is required'}), 400
+        
+        # Validate optional parameters
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        background_image_url = data.get('background_image_url')
+        webhook_url = data.get('webhook_url')
+        
+        # Validation
+        if voice not in voiceover_system.available_voices:
+            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
+        
+        if not (0.25 <= speed <= 4.0):
+            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
+        
+        # Generate session ID
+        session_id = f"api_{uuid.uuid4()}"
+        
+        # Initialize session tracking
+        api_sessions[session_id] = {
+            'status': 'queued',
+            'progress': 0,
+            'message': 'Request queued for processing...',
+            'script': script,
+            'voice': voice,
+            'speed': speed,
+            'background_image_url': background_image_url,
+            'webhook_url': webhook_url,
+            'created_at': datetime.now().isoformat(),
+            'estimated_segments': len(script.split('— pause —')) if '— pause —' in script else len(script.split('\n\n')),
+            'current_segment': 0
+        }
+        
+        # Start background processing
+        thread = threading.Thread(
+            target=process_api_shorts_async,
+            args=(session_id, script, voice, speed, background_image_url, webhook_url)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'message': 'YouTube Shorts generation started',
+            'status_url': f'/api/v1/shorts/status/{session_id}',
+            'estimated_segments': api_sessions[session_id]['estimated_segments']
+        }), 202
+        
+    except Exception as e:
+        print(f"API Shorts Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/shorts/status/<session_id>', methods=['GET'])
+def api_shorts_status(session_id):
+    """Get status of YouTube Shorts generation"""
+    try:
+        if (session_id not in api_sessions):
+            return jsonify({'error': 'Session not found'}), 404
+        
+        session_data = api_sessions[session_id].copy()
+        
+        # Build proper ZIP URL if completed and promote it to top level
+        if (session_data['status'] == 'completed' and 'result' in session_data):
+            result = session_data['result']
+            zip_url = result.get('zip_url')
+            
+            if zip_url:
+                # Build full URL for API response
+                if zip_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    full_zip_url = f"{base_url}{zip_url}"
+                else:
+                    full_zip_url = zip_url
+                
+                # Promote zip_url to top level for client compatibility
+                session_data['zip_url'] = full_zip_url
+                
+                # Also add video details for completed shorts
+                segments = result.get('segments', 1)
+                session_data['count'] = segments
+                session_data['current_segment'] = segments
+                session_data['total_segments'] = segments
+                
+                # Create video array if not present
+                if 'videos' not in session_data:
+                    session_data['videos'] = []
+                    for i in range(segments):
+                        session_data['videos'].append({
+                            'index': i + 1,
+                            'file_url': f"/download-voiceover/api_shorts_{session_id}_part_{i+1}.mp4",
+                            'duration': 8.5,
+                            'format': 'mp4',
+                            'download_name': f"api_shorts_{session_id}_part_{i+1}.mp4"
+                        })
+        
+        return jsonify(session_data)
+        
+    except Exception as e:
+        print(f"API Status Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/shorts-status/<session_id>', methods=['GET'])
+def api_shorts_status_alt(session_id):
+    """Alternative endpoint for YouTube Shorts status (for backward compatibility)"""
+    try:
+        if (session_id not in api_sessions):
+            return jsonify({'error': 'Session not found'}), 404
+        
+        session_data = api_sessions[session_id].copy()
+        
+        # Build proper ZIP URL if completed and promote it to top level
+        if (session_data['status'] == 'completed' and 'result' in session_data):
+            result = session_data['result']
+            zip_url = result.get('zip_url')
+            
+            if zip_url:
+                # Build full URL for API response
+                if zip_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    full_zip_url = f"{base_url}{zip_url}"
+                else:
+                    full_zip_url = zip_url
+                
+                # Promote zip_url to top level for client compatibility
+                session_data['zip_url'] = full_zip_url
+                
+                # Also add video details for completed shorts
+                segments = result.get('segments', 1)
+                session_data['count'] = segments
+                session_data['current_segment'] = segments
+                session_data['total_segments'] = segments
+                
+                # Create video array if not present
+                if 'videos' not in session_data:
+                    session_data['videos'] = []
+                    for i in range(segments):
+                        session_data['videos'].append({
+                            'index': i + 1,
+                            'file_url': f"/download-voiceover/api_shorts_{session_id}_part_{i+1}.mp4",
+                            'duration': 8.5,
+                            'format': 'mp4',
+                            'download_name': f"api_shorts_{session_id}_part_{i+1}.mp4"
+                        })
+        
+        return jsonify(session_data)
+        
+    except Exception as e:
+        print(f"API Status Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# New Voiceover API Endpoints
+@app.route('/api/v1/voiceover/generate', methods=['POST'])
+def api_generate_voiceover():
+    """API endpoint to generate regular format voiceover videos from script"""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        script = data.get('script', '').strip()
+        if not script:
+            return jsonify({'error': 'Script is required'}), 400
+        
+        # Validate optional parameters
+        voice = data.get('voice', 'nova')
+        speed = float(data.get('speed', 1.0))
+        format_type = data.get('format', 'mp4')
+        background_image_url = data.get('background_image_url')
+        webhook_url = data.get('webhook_url')
+        
+        # Validation
+        if voice not in voiceover_system.available_voices:
+            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
+        
+        if not (0.25 <= speed <= 4.0):
+            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
+        
+        if format_type not in voiceover_system.supported_formats:
+            return jsonify({'error': f'Unsupported format. Use: {", ".join(voiceover_system.supported_formats)}'}), 400
+        
+        # Generate session ID
+        session_id = f"api_voiceover_{uuid.uuid4()}"
+        
+        # Initialize session tracking
+        api_voiceover_sessions[session_id] = {
+            'status': 'queued',
+            'progress': 0,
+            'message': 'Request queued for processing...',
+            'script': script,
+            'voice': voice,
+            'speed': speed,
+            'format': format_type,
+            'background_image_url': background_image_url,
+            'webhook_url': webhook_url,
+            'created_at': datetime.now().isoformat()
+        }
+        
+        # Start background processing
+        thread = threading.Thread(
+            target=process_api_voiceover_async,
+            args=(session_id, script, voice, speed, format_type, background_image_url, webhook_url)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'message': 'Voiceover generation started',
+            'status_url': f'/api/v1/voiceover/status/{session_id}'
+        }), 202
+        
+    except Exception as e:
+        print(f"API Voiceover Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/voiceover/status/<session_id>', methods=['GET'])
+def api_voiceover_status(session_id):
+    """Get status of voiceover generation"""
+    try:
+        if session_id not in api_voiceover_sessions:
+            return jsonify({'error': 'Session not found'}), 404
+        
+        session_data = api_voiceover_sessions[session_id].copy()
+        
+        # Build proper video URL if completed
+        if session_data['status'] == 'completed' and 'result' in session_data:
+            video_url = session_data['result'].get('file_url')
+            if video_url and video_url.startswith('/'):
+                # Build full URL for API response
+                base_url = request.url_root.rstrip('/')
+                session_data['result']['file_url'] = f"{base_url}{video_url}"
+        
+        return jsonify(session_data)
+        
+    except Exception as e:
+        print(f"API Voiceover Status Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/voiceover/download/<session_id>', methods=['GET'])
+def api_voiceover_download(session_id):
+    """Direct download endpoint for voiceover API - returns MP4 file directly"""
+    try:
+        print(f"Download request for session: {session_id}")
+        
+        if session_id not in api_voiceover_sessions:
+            print(f"Session {session_id} not found in api_voiceover_sessions")
+            print(f"Available sessions: {list(api_voiceover_sessions.keys())}")
+            return jsonify({'error': 'Session not found'}), 404
+        
+        session_data = api_voiceover_sessions[session_id]
+        print(f"Session data: {session_data}")
+        
+        if session_data['status'] != 'completed':
+            print(f"Session status is {session_data['status']}, not completed")
+            return jsonify({'error': 'Generation not completed yet'}), 400
+        
+        if 'result' not in session_data:
+            print("No result found in session data")
+            return jsonify({'error': 'No result available'}), 404
+        
+        # Get the file URL and convert to file path
+        result = session_data['result']
+        file_url = result.get('file_url')
+        print(f"File URL from result: {file_url}")
+        
+        if not file_url:
+            print("No file_url found in result")
+            return jsonify({'error': 'No file URL available'}), 404
+        
+        # Handle different URL formats
+        if file_url.startswith('/download-voiceover/'):
+            filename = file_url.replace('/download-voiceover/', '')
+        elif file_url.startswith('/api/v1/voiceover/download/'):
+            # Handle case where URL might be malformed
+            filename = file_url.replace('/api/v1/voiceover/download/', '')
+        else:
+            # Try to extract filename from the URL
+            filename = os.path.basename(file_url)
+        
+        print(f"Extracted filename: {filename}")
+        
+        # Construct the full file path
+        file_path = os.path.join(voiceover_system.output_folder, filename)
+        print(f"Full file path: {file_path}")
+        
+        if not os.path.exists(file_path):
+            print(f"File does not exist at path: {file_path}")
+            print(f"Voiceover system output folder: {voiceover_system.output_folder}")
+            # List files in the output folder for debugging
+            try:
+                files_in_folder = os.listdir(voiceover_system.output_folder)
+                print(f"Files in output folder: {files_in_folder}")
+            except Exception as e:
+                print(f"Error listing output folder: {e}")
+            return jsonify({'error': 'Generated file not found'}), 404
+        
+        # Determine MIME type based on format
+        format_type = result.get('format', 'mp4')
+        if format_type == 'mp4':
+            mimetype = 'video/mp4'
+        elif format_type == 'mp3':
+            mimetype = 'audio/mpeg'
+        elif format_type == 'wav':
+            mimetype = 'audio/wav'
+        else:
+            mimetype = 'application/octet-stream'
+        
+        # Get the download filename
+        download_filename = result.get('filename', f'voiceover.{format_type}')
+        print(f"Serving file with mimetype: {mimetype}, download name: {download_filename}")
+        
+        # Return the file directly
+        return send_file(
+            file_path,
+            mimetype=mimetype,
+            as_attachment=True,
+            download_name=download_filename
+        )
+        
+    except Exception as e:
+        print(f"API Voiceover Download Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Download failed: {str(e)}'}), 500
 
 @app.route('/debug/<session_id>')
 def debug_session(session_id):
@@ -488,1276 +1098,6 @@ def update_progress(session_id, step, progress, message=None):
             print(f"Emitting progress update: {progress_data}")
             socketio.emit('progress_update', progress_data, to=session_id)
 
-@app.route('/download/<session_id>')
-def download_file(session_id):
-    """Download the processed PDF file"""
-    if session_id not in processing_sessions:
-        return jsonify({'error': 'Invalid session ID'}), 404
-    
-    session = processing_sessions[session_id]
-    if 'merged_file' not in session:
-        return jsonify({'error': 'File not ready for download'}), 400
-    
-    return send_file(session['merged_file'], as_attachment=True, 
-                    download_name=f"processed_{session['filename']}")
-
-@app.route('/summarize/<session_id>', methods=['POST'])
-def summarize_document(session_id):
-    """Generate AI summary of the document"""
-    if session_id not in processing_sessions:
-        return jsonify({'error': 'Invalid session ID'}), 404
-    
-    # Be tolerant to missing/invalid JSON
-    data = request.get_json(silent=True) or {}
-    custom_prompt = data.get('prompt', '')
-    
-    try:
-        socketio.emit('progress_update', {
-            'session_id': session_id,
-            'step': 'summarization',
-            'progress': 0,
-            'message': 'Generating AI summary...'
-        }, to=session_id)
-        
-        summary = rag_system.generate_summary(session_id, custom_prompt,
-                                            progress_callback=lambda p: update_progress(session_id, 'summarization', p))
-        
-        socketio.emit('summary_complete', {
-            'session_id': session_id,
-            'summary': summary
-        }, to=session_id)
-        
-        return jsonify({'success': True, 'summary': summary})
-        
-    except Exception as e:
-        # Inform UI about the failure as well
-        try:
-            socketio.emit('summary_error', {
-                'session_id': session_id,
-                'error': str(e)
-            }, to=session_id)
-        except Exception:
-            pass
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/generate-voiceover', methods=['POST'])
-def generate_voiceover():
-    try:
-        data = request.get_json()
-        text = data.get('text', '').strip()
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
-        format_type = data.get('format', 'mp3')
-        background_image = data.get('background_image', '')
-        
-        if not text:
-            return jsonify({'success': False, 'error': 'No text provided'})
-        
-        # Generate voiceover with PORTRAIT format for YouTube Shorts
-        result = voiceover_system.generate_speech(
-            text=text,
-            voice=voice,
-            speed=speed,
-            format=format_type,
-            session_id=session.get('session_id'),
-            background_image_path=background_image if background_image else None,
-            generation_type='shorts'  # Portrait format for YouTube Shorts Generator
-        )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"Error generating voiceover: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/generate-voiceover/standalone', methods=['POST'])
-def generate_voiceover_standalone():
-    """Standalone voiceover generation endpoint for direct text-to-speech conversion"""
-    try:
-        data = request.get_json()
-        text = data.get('text', '').strip()
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
-        format_type = data.get('format', 'mp3')
-        background_image = data.get('background_image', '')
-        
-        if not text:
-            return jsonify({'success': False, 'error': 'No text provided'})
-        
-        # Generate voiceover with REGULAR format for Standalone AI Voiceover Generator
-        result = voiceover_system.generate_speech(
-            text=text,
-            voice=voice,
-            speed=speed,
-            format=format_type,
-            session_id=None,  # No session needed for standalone
-            background_image_path=background_image if background_image else None,
-            generation_type='regular'  # Regular format (landscape) for Standalone Generator
-        )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"Error generating standalone voiceover: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/download-voiceover/<filename>')
-def download_voiceover(filename):
-    """Download or stream generated voiceover file. Inline by default; force download with ?dl=1. Optional ?name=Custom Title to set download filename (first line of script)."""
-    try:
-        voiceover_folder = voiceover_system.output_folder
-        file_path = os.path.join(voiceover_folder, filename)
-        
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'File not found'}), 404
-        
-        # Get file info (basic file stats since get_file_info method doesn't exist)
-        file_stat = os.stat(file_path)
-        file_info = {
-            'filename': filename,
-            'size': file_stat.st_size,
-            'modified': file_stat.st_mtime
-        }
-        
-        # Determine mimetype based on format
-        mimetype = 'audio/mpeg'  # Default for MP3
-        if filename.endswith('.wav'):
-            mimetype = 'audio/wav'
-        elif filename.endswith('.mp4'):
-            mimetype = 'video/mp4'
-        elif filename.endswith('.zip'):
-            mimetype = 'application/zip'
-        
-        # Determine disposition and download name
-        dl = request.args.get('dl', '').lower() in ('1', 'true', 'yes')
-        suggested_name = None
-        if dl:
-            base = request.args.get('name', '')
-            base = secure_filename(base) if base else os.path.splitext(filename)[0]
-            if not base:
-                base = 'voiceover'
-            ext = os.path.splitext(filename)[1]
-            suggested_name = f"{base}{ext}"
-        
-        return send_file(
-            file_path,
-            as_attachment=dl,
-            download_name=suggested_name,
-            mimetype=mimetype
-        )
-        
-    except Exception as e:
-        print(f"Error downloading voiceover: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/voiceovers/download-all', methods=['GET'])
-def download_all_voiceovers():
-    """Download all generated voiceover files as a zip archive."""
-    try:
-        base = voiceover_system.output_folder
-        os.makedirs(base, exist_ok=True)
-        allowed_exts = {'.mp3', '.wav', '.mp4', '.zip', '.srt'}
-        
-        # Collect all voiceover files
-        files_to_zip = []
-        for name in os.listdir(base):
-            if not name or name.startswith('.'):
-                continue
-            path = os.path.join(base, name)
-            if not os.path.isfile(path):
-                continue
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in allowed_exts:
-                continue
-            files_to_zip.append((name, path))
-        
-        if not files_to_zip:
-            return jsonify({'error': 'No voiceover files found'}), 404
-        
-        # Create a temporary zip file
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_zip:
-            temp_zip_path = temp_zip.name
-        
-        # Create zip with all voiceover files
-        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for filename, filepath in files_to_zip:
-                try:
-                    zf.write(filepath, filename)
-                except Exception as e:
-                    print(f"Error adding {filename} to zip: {e}")
-                    continue
-        
-        # Generate download filename with current date
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        download_name = f"all_voiceovers_{today_str}.zip"
-        
-        # Send the zip file and clean up
-        def remove_temp_file(response):
-            try:
-                os.unlink(temp_zip_path)
-            except Exception:
-                pass
-            return response
-        
-        response = send_file(
-            temp_zip_path,
-            as_attachment=True,
-            download_name=download_name,
-            mimetype='application/zip'
-        )
-        
-        # Schedule cleanup after response is sent
-        import atexit
-        atexit.register(lambda: os.path.exists(temp_zip_path) and os.unlink(temp_zip_path))
-        
-        return response
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/status/<session_id>')
-def get_status(session_id):
-    """Get current processing status"""
-    if session_id not in processing_sessions:
-        return jsonify({'error': 'Invalid session ID'}), 404
-    
-    session = processing_sessions[session_id]
-    return jsonify({
-        'status': session['status'],
-        'progress': session['progress'],
-        'filename': session['filename']
-    })
-
-@app.route('/vector-stats/<session_id>')
-def vector_stats(session_id):
-    """Get vector DB stats for a session"""
-    if session_id not in processing_sessions:
-        return jsonify({'error': 'Invalid session ID'}), 404
-    try:
-        stats = rag_system.get_document_stats(session_id)
-        return jsonify(stats)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/search/<session_id>', methods=['POST'])
-def search_documents(session_id):
-    """Semantic search within a processed document"""
-    if session_id not in processing_sessions:
-        return jsonify({'error': 'Invalid session ID'}), 404
-    data = request.get_json(silent=True) or {}
-    query = data.get('query', '')
-    n = int(data.get('n', 5))
-    if not query.strip():
-        return jsonify({'error': 'Query is required'}), 400
-    try:
-        results = rag_system.search_documents(session_id, query, max_results=n)
-        return jsonify({'results': results})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/generate-shorts', methods=['POST'])
-def generate_shorts():
-    """Generate multiple portrait MP4 voiceover videos from a single script using pause markers."""
-    # Parse JSON or multipart
-    def parse_payload():
-        content_type = request.content_type or ''
-        if 'multipart/form-data' in content_type:
-            form = request.form
-            files = request.files
-            return {
-                'script': form.get('script', ''),
-                'voice': form.get('voice', 'nova'),
-                'speed': float(form.get('speed', 1.0)),
-                'background_file': files.get('backgroundImage') if files else None
-            }
-        else:
-            data = request.get_json(silent=True) or {}
-            return {
-                'script': data.get('script', ''),
-                'voice': data.get('voice', 'nova'),
-                'speed': float(data.get('speed', 1.0)),
-                'background_file': None
-            }
-
-    payload = parse_payload()
-    script = (payload['script'] or '').strip()
-    if not script:
-        return jsonify({'error': 'Script is required'}), 400
-
-    voice = payload['voice']
-    speed = payload['speed']
-    bg_file = payload['background_file']
-
-    # Generate a unique session ID for progress tracking
-    shorts_session_id = str(uuid.uuid4())
-    
-    print(f"=== YOUTUBE SHORTS GENERATION START ===")
-    print(f"Shorts Session ID: {shorts_session_id}")
-    print(f"Script length: {len(script)} characters")
-    print(f"Voice: {voice}, Speed: {speed}")
-
-    temp_bg_path = None
-    try:
-        # Emit initial progress
-        socketio.emit('progress_update', {
-            'session_id': shorts_session_id,
-            'step': 'shorts-generation',
-            'progress': 0,
-            'message': 'Preparing script for YouTube Shorts generation...'
-        })
-
-        if (bg_file and getattr(bg_file, 'filename', '')):
-            os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
-            bg_name = secure_filename(bg_file.filename)
-            temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
-            bg_file.save(temp_bg_path)
-            print(f"Background image saved: {temp_bg_path}")
-
-        # Split the script by pause markers into shorts segments
-        def split_into_scripts(script_text):
-            """Split script into segments using pause markers like [PAUSE] or line breaks"""
-            # Split by [PAUSE] markers first
-            segments = []
-            if '— pause —' in script_text:
-                parts = script_text.split('— pause —')
-            else:
-                # Fallback to splitting by double line breaks
-                parts = script_text.split('\n\n')
-            
-            for part in parts:
-                cleaned = part.strip()
-                if cleaned:
-                    segments.append(cleaned)
-            
-            return segments
-        
-        segments = split_into_scripts(script)
-        if not segments:
-            socketio.emit('processing_error', {
-                'session_id': shorts_session_id,
-                'error': 'No segments found in script'
-            })
-            return jsonify({'error': 'No segments found in script'}), 400
-
-        print(f"Split script into {len(segments)} segments")
-        
-        # Emit progress for script splitting
-        socketio.emit('progress_update', {
-            'session_id': shorts_session_id,
-            'step': 'shorts-generation',
-            'progress': 10,
-            'message': f'Script split into {len(segments)} shorts segments. Starting video generation...'
-        })
-
-        # Generate a portrait MP4 for each segment
-        outputs = []
-        file_paths = []  # list of tuples (idx, path, actual_download_name)
-        
-        for idx, seg in enumerate(segments, start=1):
-            # Calculate progress for this segment
-            segment_progress = 10 + (idx - 1) * (70 / len(segments))
-            
-            socketio.emit('progress_update', {
-                'session_id': shorts_session_id,
-                'step': 'shorts-generation',
-                'progress': int(segment_progress),
-                'message': f'Generating video {idx} of {len(segments)}...'
-            })
-            
-            print(f"Generating segment {idx}/{len(segments)}: {seg[:50]}...")
-            
-            # Generate a meaningful filename from the segment content
-            def create_meaningful_filename(text_content, segment_index):
-                """Create a descriptive filename from the text content"""
-                if not text_content:
-                    return f"short_{segment_index:02d}"
-                
-                import re
-                
-                # Clean the text and extract the first sentence
-                text = text_content.strip()
-                sentences = re.split(r'[.!?]+', text)
-                first_sentence = sentences[0].strip() if sentences else text
-                
-                # Match the specific pattern: "<company name> as on <date>"
-                pattern = r'^(.+?)\s+as\s+on\s+(.+?)(?:\s*[.—]|$)'
-                match = re.search(pattern, first_sentence, re.IGNORECASE)
-                
-                if match:
-                    company_name = match.group(1).strip()
-                    date_part = match.group(2).strip()
-                    
-                    # Clean company name for filename
-                    company_clean = re.sub(r'[^\w\s]', '', company_name)
-                    company_clean = re.sub(r'\s+', '_', company_clean)
-                    
-                    # Clean date for filename
-                    date_clean = re.sub(r'[^\w\s]', '', date_part)
-                    date_clean = re.sub(r'\s+', '_', date_clean)
-                    
-                    # Create filename in format: Company_Name_as_on_Date
-                    filename = f"{company_clean}_as_on_{date_clean}"
-                    
-                    # Limit length and ensure it's valid
-                    if len(filename) > 50:
-                        filename = filename[:50]
-                    
-                    return filename
-                
-                # Fallback: use first 10 words from the script
-                words = first_sentence.split()[:10]
-                if words:
-                    filename = '_'.join(words)
-                    # Clean filename to be filesystem-safe
-                    filename = re.sub(r'[^\w\s-]', '', filename)
-                    filename = re.sub(r'[-\s]+', '_', filename)
-                    
-                    # Limit length
-                    if len(filename) > 50:
-                        filename = filename[:50]
-                    
-                    # Ensure filename is not empty after cleaning
-                    if len(filename) > 3:
-                        return filename
-                
-                # Final fallback if everything fails
-                return f"short_{segment_index:02d}"
-            
-            # Create meaningful filename for this segment
-            custom_filename = create_meaningful_filename(seg, idx)
-            
-            res = voiceover_system.generate_speech(
-                text=seg,
-                voice=voice,
-                speed=speed,
-                format='mp4',
-                session_id=None,
-                background_image_path=temp_bg_path,
-                custom_filename=custom_filename  # Pass our custom filename
-            )
-            
-            if not res.get('success'):
-                error_msg = f"Failed to generate segment {idx}: {res.get('error', 'Unknown error')}"
-                print(f"ERROR: {error_msg}")
-                socketio.emit('processing_error', {
-                    'session_id': shorts_session_id,
-                    'error': error_msg
-                })
-                raise Exception(error_msg)
-
-            print(f"Successfully generated segment {idx}")
-
-            # Use the custom filename we created for consistency
-            actual_download_name = f"{custom_filename}.mp4"
-            
-            outputs.append({
-                'index': idx,
-                'file_url': res['file_url'],
-                'duration': res.get('duration'),
-                'format': res.get('format', 'mp4'),
-                'download_name': actual_download_name  # Consistent naming
-            })
-            
-            # Store file path with the exact download name for ZIP creation
-            fp = res.get('file_path')
-            if fp and os.path.exists(fp):
-                file_paths.append((idx, fp, actual_download_name))
-
-        # Emit progress for zip creation
-        socketio.emit('progress_update', {
-            'session_id': shorts_session_id,
-            'step': 'shorts-generation',
-            'progress': 80,
-            'message': 'Creating download package...'
-        })
-
-        # Create a zip with all generated MP4s using exact same filenames as individual downloads
-        os.makedirs(voiceover_system.output_folder, exist_ok=True)
-        zip_name = f"shorts_{uuid.uuid4()}.zip"
-        zip_path = os.path.join(voiceover_system.output_folder, zip_name)
-        used_names = set()
-        
-        print(f"Creating zip file: {zip_path}")
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for idx, fp, actual_download_name in file_paths:
-                # Use the exact same filename as individual downloads
-                zip_filename = actual_download_name
-                
-                # Handle duplicate names (rare but possible)
-                if zip_filename in used_names:
-                    base_name = os.path.splitext(zip_filename)[0]
-                    ext = os.path.splitext(zip_filename)[1]
-                    suffix = 2
-                    while f"{base_name}-{suffix}{ext}" in used_names:
-                        suffix += 1
-                    zip_filename = f"{base_name}-{suffix}{ext}"
-                
-                used_names.add(zip_filename)
-                
-                try:
-                    zf.write(fp, zip_filename)
-                    print(f"Added {zip_filename} to zip (matches individual download name)")
-                except Exception as e:
-                    print(f"Error adding {zip_filename} to zip: {e}")
-                    pass
-        
-        # Build a friendly suggested name with date
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        zip_url = f"/download-voiceover/{zip_name}?dl=1&name=youtube_shorts_{today_str}"
-
-        # Emit completion
-        socketio.emit('progress_update', {
-            'session_id': shorts_session_id,
-            'step': 'shorts-generation',
-            'progress': 100,
-            'message': f'Successfully generated {len(outputs)} YouTube Shorts!'
-        })
-
-        print(f"=== YOUTUBE SHORTS GENERATION COMPLETED ===")
-        print(f"Generated {len(outputs)} videos")
-        print(f"Zip file: {zip_path}")
-
-        # Return response with both 'items' and 'videos' for compatibility
-        response_data = {
-            'success': True, 
-            'count': len(outputs), 
-            'items': outputs,  # Backend format
-            'videos': outputs,  # Frontend expected format
-            'zip_url': zip_url,
-            'session_id': shorts_session_id
-        }
-        
-        return jsonify(response_data)
-        
-    except Exception as e:
-        error_msg = f"Error generating shorts: {e}"
-        print(f"ERROR: {error_msg}")
-        
-        # Emit error to WebSocket
-        socketio.emit('processing_error', {
-            'session_id': shorts_session_id,
-            'error': str(e)
-        })
-        
-        return jsonify({'error': str(e)}), 500
-    finally:
-        if temp_bg_path and os.path.exists(temp_bg_path):
-            try:
-                os.remove(temp_bg_path)
-                print(f"Cleaned up temp background image: {temp_bg_path}")
-            except Exception as e:
-                print(f"Error cleaning up temp file: {e}")
-                pass
-
-@app.route('/voices', methods=['GET'])
-def list_voices():
-    """List available TTS voices and supported output formats."""
-    try:
-        # Return default provider info since get_available_providers method doesn't exist
-        providers = [('OpenAI TTS', [
-            {'name': 'alloy', 'language': 'en-US'},
-            {'name': 'echo', 'language': 'en-US'},
-            {'name': 'fable', 'language': 'en-US'},
-            {'name': 'onyx', 'language': 'en-US'},
-            {'name': 'nova', 'language': 'en-US'},
-            {'name': 'shimmer', 'language': 'en-US'}
-        ])]
-        
-        # Format response with provider information
-        response_data = {
-            'success': True,
-            'providers': [],
-            'formats': getattr(voiceover_system, 'supported_formats', ['mp3', 'wav', 'mp4'])
-        }
-        
-        for provider_name, voices in providers:
-            provider_info = {
-                'name': provider_name,
-                'voices': voices
-            }
-            response_data['providers'].append(provider_info)
-        
-        return jsonify(response_data)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/tts-providers', methods=['GET'])
-def list_tts_providers():
-    """Get detailed information about available TTS providers."""
-    try:
-        # Return default provider info since get_available_providers method doesn't exist
-        providers = [('OpenAI TTS', [
-            {'name': 'alloy', 'language': 'en-US'},
-            {'name': 'echo', 'language': 'en-US'},
-            {'name': 'fable', 'language': 'en-US'},
-            {'name': 'onyx', 'language': 'en-US'},
-            {'name': 'nova', 'language': 'en-US'},
-            {'name': 'shimmer', 'language': 'en-US'}
-        ])]
-        
-        provider_details = []
-        for provider_name, voices in providers:
-            # Count voices by language
-            languages = {}
-            for voice in voices:
-                lang = voice.get('language', 'unknown')
-                if lang not in languages:
-                    languages[lang] = 0
-                languages[lang] += 1
-            
-            provider_info = {
-                'name': provider_name,
-                'voice_count': len(voices),
-                'languages': languages,
-                'is_open_source': 'OpenAI' not in provider_name,
-                'cost': 'Free' if 'OpenAI' not in provider_name else 'Paid',
-                'quality': 'High' if provider_name in ['Coqui TTS (Open Source)', 'OpenAI TTS'] else 'Good',
-                'indian_english_support': any('en-IN' in voice.get('language', '') or 'Indian' in voice.get('name', '') for voice in voices),
-                'voices': voices
-            }
-            provider_details.append(provider_info)
-        
-        return jsonify({
-            'success': True,
-            'providers': provider_details,
-            'total_providers': len(provider_details),
-            'open_source_available': any(p['is_open_source'] for p in provider_details)
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/voiceovers', methods=['GET'])
-def list_voiceovers():
-    """List generated voiceover files with basic metadata.
-    Query params:
-      - page (int, default 1)
-      - per_page (int, default 50)
-      - sort ("asc"|"desc", default "desc" by modified time)
-    """
-    try:
-        base = voiceover_system.output_folder
-        os.makedirs(base, exist_ok=True)
-        allowed_exts = {'.mp3', '.wav', '.mp4', '.zip', '.srt'}
-        items = []
-        for name in os.listdir(base):
-            if not name or name.startswith('.'):
-                continue
-            path = os.path.join(base, name)
-            if not os.path.isfile(path):
-                continue
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in allowed_exts:
-                continue
-            stat = os.stat(path)
-            info = {
-                'filename': name,
-                'bytes': stat.st_size,
-                'mtime': int(stat.st_mtime),
-            }
-            # Duration (best-effort) - skip since get_file_info method doesn't exist
-            # Could be implemented if VoiceoverSystem adds this method in the future
-            try:
-                # vinfo = voiceover_system.get_file_info(path)
-                # info['duration'] = vinfo['duration']
-                pass
-            except Exception:
-                pass
-            # Attach sidecar subtitle URL for mp4
-            if ext == '.mp4':
-                srt_name = os.path.splitext(name)[0] + '.srt'
-                srt_path = os.path.join(base, srt_name)
-                if os.path.exists(srt_path):
-                    info['subtitle'] = srt_name
-                    info['subtitle_url'] = f"/download-voiceover/{srt_name}?dl=1"
-            items.append(info)
-        sort = (request.args.get('sort', 'desc') or 'desc').lower()
-        items.sort(key=lambda x: x.get('mtime', 0), reverse=(sort != 'asc'))
-        page = max(1, int(request.args.get('page', 1) or 1))
-        per_page = min(200, max(1, int(request.args.get('per_page', 50) or 50)))
-        start = (page - 1) * per_page
-        sliced = items[start:start + per_page]
-        return jsonify({
-            'success': True,
-            'total': len(items),
-            'page': page,
-            'per_page': per_page,
-            'items': sliced
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/voiceovers/<path:filename>', methods=['DELETE'])
-def delete_voiceover(filename):
-    """Delete a generated voiceover file by filename.
-    Optional query params:
-      - delete_subtitles (1|0, default 1): also delete matching .srt sidecar
-    """
-    try:
-        # Normalize and ensure path is inside the voiceover folder
-        base = os.path.abspath(voiceover_system.output_folder)
-        os.makedirs(base, exist_ok=True)
-        safe_name = os.path.basename(filename)
-        target = os.path.abspath(os.path.join(base, safe_name))
-        if not target.startswith(base + os.sep):
-            return jsonify({'error': 'Invalid filename'}), 400
-        if not os.path.exists(target) or not os.path.isfile(target):
-            return jsonify({'error': 'File not found'}), 404
-        # Delete file
-        try:
-            os.remove(target)
-        except Exception as e:
-            return jsonify({'error': f'Failed to delete file: {str(e)}'}), 500
-        deleted = [safe_name]
-        # Optionally delete sidecar .srt with same basename
-        delete_srt = (request.args.get('delete_subtitles', '1').lower() in ('1', 'true', 'yes'))
-        root, ext = os.path.splitext(safe_name)
-        if delete_srt:
-            srt_path = os.path.join(base, root + '.srt')
-            if os.path.exists(srt_path):
-                try:
-                    os.remove(os.path.abspath(srt_path))
-                    deleted.append(os.path.basename(srt_path))
-                except Exception:
-                    pass
-        return jsonify({'success': True, 'deleted': deleted})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# API Endpoints for External Integration
-@app.route('/api/v1/generate-shorts', methods=['POST'])
-def api_generate_shorts():
-    """
-    API endpoint for generating YouTube Shorts from external projects.
-    
-    Expected JSON payload:
-    {
-        "script": "Your script with — pause — markers",
-        "voice": "nova",
-        "speed": 1.0,
-        "background_image_url": "https://example.com/background.jpg",
-        "webhook_url": "https://your-app.com/webhook"
-    }
-    
-    Returns (202 Accepted):
-    {
-        "success": true,
-        "session_id": "api_12345-abcd-ef67-8901-234567890abc", 
-        "status": "processing",
-        "message": "YouTube Shorts generation started",
-        "estimated_completion_time": "2-5 minutes",
-        "progress_url": "/api/v1/shorts-status/{session_id}",
-        "webhook_enabled": true
-    }
-    """
-    try:
-        # Validate content type
-        if not request.is_json:
-            return jsonify({
-                'success': False,
-                'error': 'Content-Type must be application/json',
-                'code': 'INVALID_CONTENT_TYPE'
-            }), 400
-        
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid JSON payload',
-                'code': 'INVALID_JSON'
-            }), 400
-        
-        # Extract and validate parameters
-        script = (data.get('script', '') or '').strip()
-        if not script:
-            return jsonify({
-                'success': False,
-                'error': 'Script is required and cannot be empty',
-                'code': 'MISSING_SCRIPT'
-            }), 400
-        
-        voice = data.get('voice', 'nova')
-        if voice not in voiceover_system.available_voices:
-            return jsonify({
-                'success': False,
-                'error': f'Voice must be one of: {", ".join(voiceover_system.available_voices)}',
-                'code': 'INVALID_VOICE'
-            }), 400
-        
-        try:
-            speed = float(data.get('speed', 1.0))
-            if speed < 0.25 or speed > 4.0:
-                return jsonify({
-                    'success': False,
-                    'error': 'Speed must be between 0.25 and 4.0',
-                    'code': 'INVALID_SPEED'
-                }), 400
-        except (TypeError, ValueError):
-            return jsonify({
-                'success': False,
-                'error': 'Speed must be a valid number',
-                'code': 'INVALID_SPEED_FORMAT'
-            }), 400
-        
-        # Optional parameters
-        background_image_url = data.get('background_image_url', '')
-        webhook_url = data.get('webhook_url', '')
-        
-        # Estimate completion time and segments
-        estimated_segments = len(script.split('— pause —')) if '— pause —' in script else len(script.split('\n\n'))
-        estimated_segments = max(1, estimated_segments)
-        
-        # Estimate completion time based on segments (roughly 30-60 seconds per segment)
-        if estimated_segments <= 2:
-            estimated_completion = "1-2 minutes"
-        elif estimated_segments <= 5:
-            estimated_completion = "2-5 minutes"
-        elif estimated_segments <= 10:
-            estimated_completion = "5-8 minutes"
-        else:
-            estimated_completion = "8-15 minutes"
-        
-        # Generate unique session ID with API prefix
-        api_session_id = f"api_{uuid.uuid4()}"
-        
-        print(f"=== API YOUTUBE SHORTS REQUEST ===")
-        print(f"API Session ID: {api_session_id}")
-        print(f"Script length: {len(script)} characters")
-        print(f"Voice: {voice}, Speed: {speed}")
-        print(f"Estimated segments: {estimated_segments}")
-        print(f"Background image URL: {background_image_url}")
-        print(f"Webhook URL: {webhook_url}")
-        
-        # Store session info for status tracking
-        if not hasattr(app, 'api_sessions'):
-            app.api_sessions = {}
-        
-        app.api_sessions[api_session_id] = {
-            'status': 'processing',
-            'created_at': datetime.now().isoformat(),
-            'script': script,
-            'voice': voice,
-            'speed': speed,
-            'background_image_url': background_image_url,
-            'webhook_url': webhook_url,
-            'progress': 0,
-            'message': 'Initializing YouTube Shorts generation...',
-            'estimated_segments': estimated_segments,
-            'estimated_completion': estimated_completion,
-            'current_segment': 0,
-            'result': None,
-            'error': None
-        }
-        
-        # Start background processing
-        socketio.start_background_task(target=process_api_shorts_async, 
-                                     session_id=api_session_id,
-                                     script=script, 
-                                     voice=voice, 
-                                     speed=speed,
-                                     background_image_url=background_image_url,
-                                     webhook_url=webhook_url)
-        
-        # Return 202 Accepted with comprehensive response
-        response = {
-            'success': True,
-            'session_id': api_session_id,
-            'status': 'processing',
-            'message': 'YouTube Shorts generation started',
-            'estimated_completion_time': estimated_completion,
-            'progress_url': f'/api/v1/shorts-status/{api_session_id}',
-            'webhook_enabled': bool(webhook_url)
-        }
-        
-        print(f"API: Returning 202 response: {response}")
-        return jsonify(response), 202  # 202 Accepted for async processing
-        
-    except Exception as e:
-        error_msg = f"API Error: {str(e)}"
-        print(error_msg)
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'code': 'INTERNAL_ERROR'
-        }), 500
-
-@app.route('/api/v1/shorts-status/<session_id>', methods=['GET'])
-def api_shorts_status(session_id):
-    """
-    Check the status of a YouTube Shorts generation session.
-    
-    Returns:
-    {
-        "success": true,
-        "session_id": "api_12345-abcd-ef67-8901-234567890abc",
-        "status": "processing|completed|failed",
-        "progress": 75,
-        "message": "Generating video 3 of 4...",
-        "estimated_time_remaining": "1-2 minutes",
-        "created_at": "2025-09-13T10:30:00",
-        "zip_url": "download_link" (when completed),
-        "completed_at": "timestamp" (when completed),
-        "failed_at": "timestamp" (when failed)
-    }
-    """
-    try:
-        if not hasattr(app, 'api_sessions'):
-            app.api_sessions = {}
-        
-        if session_id not in app.api_sessions:
-            return jsonify({
-                'success': False,
-                'error': 'Session not found',
-                'code': 'SESSION_NOT_FOUND'
-            }), 404
-        
-        session_data = app.api_sessions[session_id]
-        
-        # Calculate estimated time remaining
-        progress = session_data.get('progress', 0)
-        if progress < 20:
-            estimated_time_remaining = session_data.get('estimated_completion', '2-5 minutes')
-        elif progress < 50:
-            estimated_time_remaining = "2-4 minutes"
-        elif progress < 80:
-            estimated_time_remaining = "1-2 minutes"
-        else:
-            estimated_time_remaining = "30 seconds"
-        
-        response = {
-            'success': True,
-            'session_id': session_id,
-            'status': session_data['status'],
-            'progress': progress,
-            'message': session_data.get('message', ''),
-            'estimated_time_remaining': estimated_time_remaining,
-            'created_at': session_data.get('created_at')
-        }
-        
-        if session_data['status'] == 'completed' and session_data.get('result'):
-            result = session_data['result']
-            
-            # Construct proper absolute URL based on current request
-            zip_path = result.get('zip_url', '')
-            if zip_path.startswith('/'):
-                # Build absolute URL from current request
-                scheme = request.environ.get('HTTP_X_FORWARDED_PROTO', request.scheme)
-                host = request.environ.get('HTTP_HOST', request.host)
-                zip_url = f"{scheme}://{host}{zip_path}"
-            else:
-                zip_url = zip_path
-            
-            response.update({
-                'zip_url': zip_url,
-                'completed_at': datetime.now().isoformat()
-            })
-            print(f"API Status: Session {session_id} completed with {result.get('count', 0)} videos")
-            print(f"API Status: ZIP URL returned: {zip_url}")
-        elif session_data['status'] == 'failed':
-            response.update({
-                'error': session_data.get('error', 'Unknown error'),
-                'failed_at': datetime.now().isoformat()
-            })
-            print(f"API Status: Session {session_id} failed: {response['error']}")
-        else:
-            print(f"API Status: Session {session_id} - {session_data['status']} - {progress}%")
-        
-        return jsonify(response)
-        
-    except Exception as e:
-        error_msg = f"API Status Error: {str(e)}"
-        print(error_msg)
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'code': 'INTERNAL_ERROR'
-        }), 500
-
-def process_api_shorts_async(session_id, script, voice, speed, background_image_url=None, webhook_url=None):
-    """Background task to process YouTube Shorts generation for API requests."""
-    import requests
-    
-    def split_into_scripts(script_text):
-        """Split script into segments using pause markers"""
-        segments = []
-        if '— pause —' in script_text:
-            parts = script_text.split('— pause —')
-        else:
-            parts = script_text.split('\n\n')
-        
-        for part in parts:
-            cleaned = part.strip()
-            if cleaned:
-                segments.append(cleaned)
-        return segments
-    
-    def send_webhook(status, progress, message, **kwargs):
-        """Send webhook notification if webhook_url is provided"""
-        if not webhook_url:
-            return
-        
-        try:
-            payload = {
-                'session_id': session_id,
-                'status': status,
-                'progress': progress,
-                'message': message,
-                **kwargs
-            }
-            
-            response = requests.post(webhook_url, json=payload, timeout=10)
-            print(f"API: Webhook sent to {webhook_url} - Status: {response.status_code}")
-        except Exception as e:
-            print(f"API: Failed to send webhook: {e}")
-    
-    try:
-        with app.app_context():
-            print(f"Starting async processing for API session: {session_id}")
-            
-            # Download background image if URL provided
-            temp_bg_path = None
-            if background_image_url:
-                try:
-                    print(f"API: Downloading background image: {background_image_url}")
-                    response = requests.get(background_image_url, timeout=30)
-                    response.raise_for_status()
-                    
-                    # Create temp file
-                    os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
-                    temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"api_bg_{uuid.uuid4()}.jpg")
-                    
-                    with open(temp_bg_path, 'wb') as f:
-                        f.write(response.content)
-                    
-                    print(f"API: Background image downloaded: {temp_bg_path}")
-                except Exception as e:
-                    print(f"API: Failed to download background image: {e}")
-                    # Continue without background image
-            
-            # Update session status
-            app.api_sessions[session_id]['status'] = 'processing'
-            app.api_sessions[session_id]['progress'] = 10
-            app.api_sessions[session_id]['message'] = 'Splitting script into segments...'
-            app.api_sessions[session_id]['current_segment'] = 0
-            
-            send_webhook('processing', 10, 'Splitting script into segments...')
-            
-            # Split script into segments
-            segments = split_into_scripts(script)
-            if not segments:
-                raise Exception('No valid segments found in script')
-            
-            print(f"API: Split script into {len(segments)} segments")
-            
-            # Update estimated segments count if different from initial estimate
-            app.api_sessions[session_id]['estimated_segments'] = len(segments)
-            app.api_sessions[session_id]['progress'] = 20
-            app.api_sessions[session_id]['message'] = f'Starting generation of {len(segments)} video segments...'
-            
-            send_webhook('processing', 20, f'Starting generation of {len(segments)} video segments...')
-            
-            # Generate videos for each segment
-            outputs = []
-            file_paths = []
-            
-            for idx, seg in enumerate(segments, start=1):
-                segment_progress = 20 + (idx - 1) * (60 / len(segments))
-                app.api_sessions[session_id]['progress'] = int(segment_progress)
-                app.api_sessions[session_id]['current_segment'] = idx
-                app.api_sessions[session_id]['message'] = f'Generating video {idx} of {len(segments)}...'
-                
-                print(f"API: Generating segment {idx}/{len(segments)}: {seg[:30]}...")
-                
-                # Send webhook for progress updates (every few segments)
-                if idx % 2 == 0 or idx == len(segments):
-                    send_webhook('processing', int(segment_progress), f'Generating video {idx} of {len(segments)}...')
-                
-                # Create meaningful filename
-                def create_api_filename(text_content, segment_index):
-                    if not text_content:
-                        return f"short_{segment_index:02d}"
-                    
-                    sentences = re.split(r'[.!?]+', text_content.strip())
-                    first_sentence = sentences[0].strip() if sentences else text_content
-                    
-                    # Match the specific pattern: "<company name> as on <date>"
-                    pattern = r'^(.+?)\s+as\s+on\s+(.+?)(?:\s*[.—]|$)'
-                    match = re.search(pattern, first_sentence, re.IGNORECASE)
-                    
-                    if match:
-                        company_name = match.group(1).strip()
-                        date_part = match.group(2).strip()
-                        
-                        # Clean company name for filename
-                        company_clean = re.sub(r'[^\w\s]', '', company_name)
-                        company_clean = re.sub(r'\s+', '_', company_clean)
-                        
-                        # Clean date for filename
-                        date_clean = re.sub(r'[^\w\s]', '', date_part)
-                        date_clean = re.sub(r'\s+', '_', date_clean)
-                        
-                        # Create filename in format: Company_Name_as_on_Date
-                        filename = f"{company_clean}_as_on_{date_clean}"
-                        
-                        # Limit length and ensure it's valid
-                        if len(filename) > 40:
-                            filename = filename[:40]
-                        
-                        return filename
-                    
-                    # Fallback: use first 10 words from the script
-                    words = first_sentence.split()[:10]
-                    if words:
-                        filename = '_'.join(words)
-                        # Clean filename to be filesystem-safe
-                        filename = re.sub(r'[^\w\s-]', '', filename)
-                        filename = re.sub(r'[-\s]+', '_', filename)
-                        
-                        # Limit length
-                        if len(filename) > 40:
-                            filename = filename[:40]
-                        
-                        # Ensure filename is not empty after cleaning
-                        if len(filename) > 3:
-                            return filename
-                    
-                    # Final fallback if everything fails
-                    return f"short_{segment_index:02d}"
-                
-                custom_filename = create_api_filename(seg, idx)
-                
-                # Generate the voiceover video
-                result = voiceover_system.generate_speech(
-                    text=seg,
-                    voice=voice,
-                    speed=speed,
-                    format='mp4',
-                    session_id=None,
-                    background_image_path=temp_bg_path,
-                    generation_type='youtube_shorts',
-                    custom_filename=custom_filename
-                )
-                
-                if not result.get('success'):
-                    error_msg = f"Failed to generate segment {idx}: {result.get('error', 'Unknown error')}"
-                    print(f"API: ERROR - {error_msg}")
-                    raise Exception(error_msg)
-                
-                print(f"API: Successfully generated segment {idx}")
-                
-                actual_download_name = f"{custom_filename}.mp4"
-                outputs.append({
-                    'index': idx,
-                    'file_url': result['file_url'],
-                    'duration': result.get('duration'),
-                    'format': result.get('format', 'mp4'),
-                    'download_name': actual_download_name
-                })
-                
-                # Store file path for ZIP creation
-                fp = result.get('file_path')
-                if fp and os.path.exists(fp):
-                    file_paths.append((idx, fp, actual_download_name))
-                    print(f"API: Added file to ZIP queue: {actual_download_name}")
-                else:
-                    print(f"API: WARNING - File not found for segment {idx}: {fp}")
-            
-            # Create ZIP file
-            app.api_sessions[session_id]['progress'] = 85
-            app.api_sessions[session_id]['message'] = 'Creating download package...'
-            
-            send_webhook('processing', 85, 'Creating download package...')
-            
-            # Ensure voiceovers folder exists
-            os.makedirs(voiceover_system.output_folder, exist_ok=True)
-            
-            zip_name = f"api_shorts_{session_id.replace('api_', '')}_{uuid.uuid4().hex[:8]}.zip"
-            zip_path = os.path.join(voiceover_system.output_folder, zip_name)
-            
-            print(f"API: Creating ZIP file: {zip_path} with {len(file_paths)} files")
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for idx, fp, download_name in file_paths:
-                    try:
-                        if os.path.exists(fp):
-                            zf.write(fp, download_name)
-                            print(f"API: Added {download_name} to ZIP successfully")
-                        else:
-                            print(f"API: ERROR - File not found when creating ZIP: {fp}")
-                    except Exception as e:
-                        print(f"API: Error adding {download_name} to ZIP: {e}")
-            
-            # Verify ZIP was created
-            if not os.path.exists(zip_path):
-                raise Exception("Failed to create ZIP file")
-            
-            zip_size = os.path.getsize(zip_path)
-            print(f"API: ZIP file created successfully: {zip_path} ({zip_size} bytes)")
-            
-            # Create download URL
-            zip_url = f"/download-voiceover/{zip_name}"
-            
-            # Update session with final result
-            app.api_sessions[session_id]['status'] = 'completed'
-            app.api_sessions[session_id]['progress'] = 100
-            app.api_sessions[session_id]['current_segment'] = len(segments)
-            app.api_sessions[session_id]['message'] = f'Successfully generated {len(outputs)} YouTube Shorts!'
-            app.api_sessions[session_id]['result'] = {
-                'count': len(outputs),
-                'videos': outputs,
-                'zip_url': zip_url,
-                'zip_name': zip_name,
-                'total_segments': len(segments)
-            }
-            
-            # Send completion webhook
-            # Build proper webhook URL using the same logic as status endpoint
-            webhook_zip_url = zip_url
-            if webhook_url:
-                # For webhook, we need to construct a full URL since the webhook recipient 
-                # won't have access to the request context
-                # Use environment variable or default to localhost for webhook URLs
-                webhook_host = os.getenv('WEBHOOK_BASE_URL', 'http://localhost:5000')
-                if zip_url.startswith('/'):
-                    webhook_zip_url = f"{webhook_host}{zip_url}"
-            
-            send_webhook('completed', 100, f'Successfully generated {len(outputs)} YouTube Shorts!', 
-                        zip_url=webhook_zip_url)
-            
-            print(f"API: Completed processing for session {session_id}")
-            print(f"API: Generated {len(outputs)} videos, ZIP: {zip_name}")
-            print(f"API: Webhook ZIP URL: {webhook_zip_url}")
-            
-            # Cleanup background image
-            if temp_bg_path and os.path.exists(temp_bg_path):
-                try:
-                    os.remove(temp_bg_path)
-                    print(f"API: Cleaned up temp background image: {temp_bg_path}")
-                except Exception as e:
-                    print(f"API: Error cleaning up temp file: {e}")
-            
-    except Exception as e:
-        error_msg = f"API Background Error for session {session_id}: {str(e)}"
-        print(error_msg)
-        import traceback
-        print("Full traceback:", flush=True)
-        traceback.print_exc()
-        
-        app.api_sessions[session_id]['status'] = 'failed'
-        app.api_sessions[session_id]['error'] = str(e)
-        app.api_sessions[session_id]['message'] = f'Generation failed: {str(e)}'
-        
-        # Send failure webhook
-        send_webhook('failed', app.api_sessions[session_id].get('progress', 0), 
-                    f'Generation failed: {str(e)}', error=str(e))
-        
-        # Cleanup background image on error
-        if 'temp_bg_path' in locals() and temp_bg_path and os.path.exists(temp_bg_path):
-            try:
-                os.remove(temp_bg_path)
-                print(f"API: Cleaned up temp background image after error: {temp_bg_path}")
-            except Exception:
-                pass
-
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
@@ -1786,6 +1126,512 @@ def handle_leave_session(data):
         print(f'Client left session room: {session_id}')
         emit('session_left', {'session_id': session_id})
 
+def process_api_shorts_async(session_id, script, voice, speed, background_image_url=None, webhook_url=None):
+    """Background processing function for API YouTube Shorts generation"""
+    try:
+        with app.app_context():
+            print(f"Starting API shorts processing for session: {session_id}")
+            
+            # Update session status
+            if session_id in api_sessions:
+                api_sessions[session_id].update({
+                    'status': 'processing',
+                    'progress': 10,
+                    'message': 'Initializing YouTube Shorts generation...',
+                    'updated_at': datetime.now().isoformat()
+                })
+            
+            # Handle background image if provided
+            background_image_path = None
+            if background_image_url:
+                try:
+                    import requests
+                    response = requests.get(background_image_url, timeout=30)
+                    if response.status_code == 200:
+                        # Extract filename from URL or generate one
+                        import urllib.parse
+                        parsed_url = urllib.parse.urlparse(background_image_url)
+                        filename = os.path.basename(parsed_url.path) or f"bg_{uuid.uuid4()}.jpg"
+                        
+                        # Ensure it has a valid image extension
+                        if not filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                            filename += '.jpg'
+                        
+                        background_image_path = os.path.join(app.config['TEMP_FOLDER'], f"api_bg_{session_id}_{filename}")
+                        
+                        with open(background_image_path, 'wb') as f:
+                            f.write(response.content)
+                        
+                        print(f"Downloaded background image: {background_image_path}")
+                        
+                        # Update progress
+                        api_sessions[session_id].update({
+                            'progress': 25,
+                            'message': 'Background image downloaded, splitting script...'
+                        })
+                        
+                except Exception as e:
+                    print(f"Failed to download background image: {e}")
+                    # Continue without background image
+            
+            # Update progress before splitting
+            api_sessions[session_id].update({
+                'progress': 30,
+                'message': 'Splitting script into YouTube Shorts segments...'
+            })
+            
+            # Split script by pause markers (same logic as UI)
+            pause_markers = ['— pause —', '-- pause --']
+            script_segments = []
+            
+            # Split the script by pause markers
+            current_script = script
+            for marker in pause_markers:
+                if marker in current_script:
+                    segments = current_script.split(marker)
+                    script_segments = [seg.strip() for seg in segments if seg.strip()]
+                    break
+            
+            # If no pause markers found, treat as single segment
+            if not script_segments:
+                script_segments = [script.strip()]
+            
+            print(f"Split script into {len(script_segments)} segments for YouTube Shorts")
+            
+            # Helper function to create filename from first 10 words
+            def create_filename_from_text(text, segment_number):
+                """Create a safe filename from the first 10 words of the text"""
+                if not text:
+                    return f"shorts_part_{segment_number}"
+                
+                # Clean the text and get first 10 words
+                words = re.sub(r'[^\w\s]', '', text).split()[:10]
+                if not words:
+                    return f"shorts_part_{segment_number}"
+                
+                # Join words and create safe filename
+                filename_base = '_'.join(words).lower()
+                
+                # Remove any remaining unsafe characters and limit length
+                filename_base = re.sub(r'[^\w\-_]', '', filename_base)[:50]
+                
+                # Ensure it's not empty after cleaning
+                if not filename_base:
+                    return f"shorts_part_{segment_number}"
+                
+                return filename_base
+            
+            # Update progress
+            api_sessions[session_id].update({
+                'progress': 40,
+                'message': f'Generating {len(script_segments)} YouTube Shorts videos...',
+                'total_segments': len(script_segments),
+                'current_segment': 0
+            })
+            
+            # Generate individual videos for each segment
+            video_files = []
+            segment_results = []
+            
+            for i, segment in enumerate(script_segments):
+                try:
+                    print(f"Generating segment {i+1}/{len(script_segments)}")
+                    
+                    # Update progress for current segment
+                    segment_progress = 40 + int((i / len(script_segments)) * 40)
+                    api_sessions[session_id].update({
+                        'progress': segment_progress,
+                        'message': f'Generating video {i+1} of {len(script_segments)}...',
+                        'current_segment': i + 1
+                    })
+                    
+                    # Create filename from first 10 words of the segment
+                    filename_base = create_filename_from_text(segment, i + 1)
+                    custom_filename = f"api_shorts_{session_id}_{filename_base}"
+                    
+                    # Generate individual video for this segment
+                    segment_session_id = f"{session_id}_part_{i+1}"
+                    result = voiceover_system.generate_speech(
+                        text=segment,
+                        voice=voice,
+                        speed=speed,
+                        format='mp4',
+                        session_id=segment_session_id,
+                        background_image_path=background_image_path,
+                        generation_type='youtube_shorts',
+                        custom_filename=custom_filename
+                    )
+                    
+                    if result['success']:
+                        video_files.append(result['file_path'])
+                        segment_results.append({
+                            'segment': i + 1,
+                            'file_path': result['file_path'],
+                            'file_url': result['file_url'],
+                            'duration': result.get('duration'),
+                            'text': segment[:100] + '...' if len(segment) > 100 else segment,
+                            'filename': f"{filename_base}.mp4"
+                        })
+                        print(f"Successfully generated segment {i+1} with filename: {filename_base}.mp4")
+                    else:
+                        print(f"Failed to generate segment {i+1}: {result.get('error')}")
+                        # Continue with other segments even if one fails
+                        
+                except Exception as e:
+                    print(f"Error generating segment {i+1}: {e}")
+                    # Continue with other segments
+                    continue
+            
+            if not video_files:
+                raise Exception("No video segments were successfully generated")
+            
+            # Update progress before creating ZIP
+            api_sessions[session_id].update({
+                'progress': 85,
+                'message': f'Creating ZIP package with {len(video_files)} videos...'
+            })
+            
+            # Create ZIP file containing all videos
+            zip_filename = f"api_shorts_{session_id}.zip"
+            zip_path = os.path.join(voiceover_system.output_folder, zip_filename)
+            
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                for i, video_path in enumerate(video_files):
+                    if os.path.exists(video_path):
+                        # Use the descriptive filename based on content
+                        filename_base = create_filename_from_text(script_segments[i], i + 1)
+                        video_filename = f"{filename_base}.mp4"
+                        zip_file.write(video_path, video_filename)
+                        print(f"Added {video_filename} to ZIP")
+            
+            print(f"Created ZIP file: {zip_path}")
+            
+            # Build full URL for the result
+            base_url = f"{app.config['PREFERRED_URL_SCHEME']}://{app.config['SERVER_NAME']}"
+            zip_file_url = f"/download-voiceover/{zip_filename}"
+            full_zip_url = f"{base_url}{zip_file_url}"
+            
+            # Update session with success
+            api_sessions[session_id].update({
+                'status': 'completed',
+                'progress': 100,
+                'message': f'YouTube Shorts generation completed! Created {len(video_files)} videos.',
+                'result': {
+                    'zip_url': zip_file_url,  # Keep relative URL for internal use
+                    'full_zip_url': full_zip_url,   # Full URL for external use
+                    'filename': zip_filename,
+                    'segments': len(video_files),
+                    'videos': segment_results,
+                    'total_duration': sum(r.get('duration', 0) for r in segment_results if r.get('duration'))
+                },
+                'completed_at': datetime.now().isoformat()
+            })
+            
+            # Send webhook if provided
+            if webhook_url:
+                try:
+                    import requests
+                    webhook_data = {
+                        'session_id': session_id,
+                        'status': 'completed',
+                        'result': api_sessions[session_id]['result']
+                    }
+                    requests.post(webhook_url, json=webhook_data, timeout=30)
+                except Exception as e:
+                    print(f"Webhook error: {e}")
+            
+            print(f"API Shorts completed for session: {session_id} with {len(video_files)} videos")
+            
+            # Cleanup background image
+            if background_image_path and os.path.exists(background_image_path):
+                try:
+                    os.remove(background_image_path)
+                except Exception:
+                    pass
+    
+    except Exception as e:
+        print(f"API Shorts processing error for session {session_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Update session with error
+        if session_id in api_sessions:
+            api_sessions[session_id].update({
+                'status': 'failed',
+                'progress': 0,
+                'message': f"Processing error: {str(e)}",
+                'error': str(e),
+                'failed_at': datetime.now().isoformat()
+            })
+        
+        # Send webhook if provided
+        if webhook_url:
+            try:
+                import requests
+                webhook_data = {
+                    'session_id': session_id,
+                    'status': 'failed',
+                    'error': str(e)
+                }
+                requests.post(webhook_url, json=webhook_data, timeout=30)
+            except Exception:
+                pass
+        
+        # Cleanup on error
+        if background_image_path and os.path.exists(background_image_path):
+            try:
+                os.remove(background_image_path)
+            except Exception:
+                pass
+
+def process_api_voiceover_async(session_id, script, voice, speed, format_type, background_image_url=None, webhook_url=None):
+    """Background processing function for API voiceover generation"""
+    try:
+        with app.app_context():
+            print(f"Starting API voiceover processing for session: {session_id}")
+            
+            # Update session status
+            if session_id in api_voiceover_sessions:
+                api_voiceover_sessions[session_id].update({
+                    'status': 'processing',
+                    'progress': 10,
+                    'message': 'Initializing voiceover generation...',
+                    'updated_at': datetime.now().isoformat()
+                })
+            
+            # Handle background image if provided
+            background_image_path = None
+            if background_image_url:
+                try:
+                    import requests
+                    response = requests.get(background_image_url, timeout=30)
+                    if response.status_code == 200:
+                        # Extract filename from URL or generate one
+                        import urllib.parse
+                        parsed_url = urllib.parse.urlparse(background_image_url)
+                        filename = os.path.basename(parsed_url.path) or f"bg_{uuid.uuid4()}.jpg"
+                        
+                        # Ensure it has a valid image extension
+                        if not filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                            filename += '.jpg'
+                        
+                        background_image_path = os.path.join(app.config['TEMP_FOLDER'], f"api_voiceover_bg_{session_id}_{filename}")
+                        
+                        with open(background_image_path, 'wb') as f:
+                            f.write(response.content)
+                        
+                        print(f"Downloaded background image: {background_image_path}")
+                        
+                        # Update progress
+                        api_voiceover_sessions[session_id].update({
+                            'progress': 25,
+                            'message': 'Background image downloaded, generating voiceover...'
+                        })
+                        
+                except Exception as e:
+                    print(f"Failed to download background image: {e}")
+                    # Continue without background image
+            
+            # Update progress before generation
+            api_voiceover_sessions[session_id].update({
+                'progress': 40,
+                'message': 'Generating voiceover...'
+            })
+            
+            # Generate voiceover using the voiceover system
+            result = voiceover_system.generate_speech(
+                text=script,
+                voice=voice,
+                speed=speed,
+                format=format_type,
+                session_id=session_id,
+                background_image_path=background_image_path,
+                generation_type='regular'
+            )
+            
+            # Update progress
+            api_voiceover_sessions[session_id].update({
+                'progress': 80,
+                'message': 'Processing voiceover file...'
+            })
+            
+            if result['success']:
+                # Build full URL for the result
+                base_url = f"{app.config['PREFERRED_URL_SCHEME']}://{app.config['SERVER_NAME']}"
+                full_file_url = f"{base_url}{result['file_url']}"
+                
+                # Update session with success
+                api_voiceover_sessions[session_id].update({
+                    'status': 'completed',
+                    'progress': 100,
+                    'message': 'Voiceover generation completed successfully!',
+                    'result': {
+                        'file_url': result['file_url'],  # Keep relative URL for internal use
+                        'full_file_url': full_file_url,   # Full URL for external use
+                        'filename': result.get('filename', f'voiceover.{format_type}'),
+                        'duration': result.get('duration'),
+                        'format': result.get('format', format_type)
+                    },
+                    'completed_at': datetime.now().isoformat()
+                })
+                
+                # Send webhook if provided
+                if webhook_url:
+                    try:
+                        import requests
+                        webhook_data = {
+                            'session_id': session_id,
+                            'status': 'completed',
+                            'result': api_voiceover_sessions[session_id]['result']
+                        }
+                        requests.post(webhook_url, json=webhook_data, timeout=30)
+                    except Exception as e:
+                        print(f"Webhook error: {e}")
+                
+                print(f"API Voiceover completed for session: {session_id}")
+            else:
+                # Update session with error
+                api_voiceover_sessions[session_id].update({
+                    'status': 'failed',
+                    'progress': 0,
+                    'message': f"Generation failed: {result.get('error', 'Unknown error')}",
+                    'error': result.get('error', 'Unknown error'),
+                    'failed_at': datetime.now().isoformat()
+                })
+                
+                # Send webhook if provided
+                if webhook_url:
+                    try:
+                        import requests
+                        webhook_data = {
+                            'session_id': session_id,
+                            'status': 'failed',
+                            'error': result.get('error', 'Unknown error')
+                        }
+                        requests.post(webhook_url, json=webhook_data, timeout=30)
+                    except Exception as e:
+                        print(f"Webhook error: {e}")
+                
+                print(f"API Voiceover failed for session: {session_id}")
+            
+            # Cleanup background image
+            if background_image_path and os.path.exists(background_image_path):
+                try:
+                    os.remove(background_image_path)
+                except Exception:
+                    pass
+    
+    except Exception as e:
+        print(f"API Voiceover processing error for session {session_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Update session with error
+        if session_id in api_voiceover_sessions:
+            api_voiceover_sessions[session_id].update({
+                'status': 'failed',
+                'progress': 0,
+                'message': f"Processing error: {str(e)}",
+                'error': str(e),
+                'failed_at': datetime.now().isoformat()
+            })
+        
+        # Send webhook if provided
+        if webhook_url:
+            try:
+                import requests
+                webhook_data = {
+                    'session_id': session_id,
+                    'status': 'failed',
+                    'error': str(e)
+                }
+                requests.post(webhook_url, json=webhook_data, timeout=30)
+            except Exception:
+                pass
+        
+        # Cleanup on error
+        if background_image_path and os.path.exists(background_image_path):
+            try:
+                os.remove(background_image_path)
+            except Exception:
+                pass
+
+@app.route('/api/v1/search', methods=['POST'])
+def api_search():
+    """API endpoint for searching documents"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        session_id = data.get('session_id')
+        query = data.get('query', '').strip()
+        max_results = min(int(data.get('max_results', 5)), 20)  # Cap at 20
+        
+        if not session_id:
+            return jsonify({'error': 'session_id is required'}), 400
+        
+        if not query:
+            return jsonify({'error': 'query is required'}), 400
+        
+        # Search documents using the correct method
+        results = rag_system.search_documents(session_id, query, max_results)
+        
+        return jsonify({
+            'session_id': session_id,
+            'query': query,
+            'results': results,
+            'total_results': len(results)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/voiceover', methods=['POST'])
+def api_voiceover():
+    """API endpoint for voiceover generation"""
+    try:
+        # Get form data
+        script = request.form.get('script', '').strip()
+        voice = request.form.get('voice', 'alloy')
+        speed = float(request.form.get('speed', 1.0))
+        format_type = request.form.get('format', 'mp3')
+        webhook_url = request.form.get('webhook_url', '').strip() or None
+        background_image_url = request.form.get('background_image_url', '').strip() or None
+        
+        # Handle file upload
+        background_image = request.files.get('background_image')
+        background_image_path = None
+        
+        if background_image and background_image.filename and background_image.filename.strip():
+            filename = secure_filename(background_image.filename or 'image.png')
+            if filename and filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                background_image_path = os.path.join(app.config['TEMP_FOLDER'], f"api_bg_{uuid.uuid4()}_{filename}")
+                background_image.save(background_image_path)
+        
+        # Validate required fields
+        if not script:
+            return jsonify({'error': 'Script is required'}), 400
+        
+        # Generate session ID
+        session_id = f"api_voiceover_{uuid.uuid4()}"
+        
+        # Start background processing
+        thread = threading.Thread(
+            target=process_api_voiceover_async,
+            args=(session_id, script, voice, speed, format_type, background_image_url, webhook_url)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'message': 'Voiceover generation started'
+        }), 202
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     # Ensure required folders exist

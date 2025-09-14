@@ -192,6 +192,7 @@ pdf-split-read-rag/
 
 ## API Endpoints
 
+### Web Interface Endpoints
 - `GET /` - Main web interface
 - `POST /upload` - Upload PDF file
 - `GET /process/<session_id>` - Start processing pipeline
@@ -200,6 +201,25 @@ pdf-split-read-rag/
 - `POST /generate-voiceover/<session_id>` - Generate AI voiceover (supports 'standalone' for independent usage)
 - `GET /download-voiceover/<filename>` - Download generated voiceover file
 - `GET /status/<session_id>` - Get processing status
+
+### YouTube Shorts API Endpoints
+- `POST /api/v1/shorts/generate` - Generate YouTube Shorts videos from script
+- `GET /api/v1/shorts/status/<session_id>` - Check YouTube Shorts generation status
+
+### Regular Format Voiceover API Endpoints (NEW!)
+- `POST /api/v1/voiceover/generate` - Generate regular format voiceover videos from script
+- `GET /api/v1/voiceover/status/<session_id>` - Check voiceover generation status  
+- `GET /api/v1/voiceover/download/<session_id>` - Direct download of generated voiceover file
+
+#### Key Differences: Shorts vs Regular Voiceover APIs
+
+| Feature | YouTube Shorts API | Regular Voiceover API |
+|---------|-------------------|----------------------|
+| **Video Format** | Portrait 1080x1920 (9:16) | Landscape 1920x1080 (16:9) |
+| **Output** | Multiple video segments in ZIP | Single video file |
+| **Script Splitting** | Uses `— pause —` markers | Treats as single content |
+| **Download Method** | ZIP file with multiple videos | Direct MP4/MP3/WAV download |
+| **Use Case** | Social media shorts | Presentations, tutorials, general content |
 
 ## Technologies Used
 
