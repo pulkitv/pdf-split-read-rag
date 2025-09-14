@@ -103,6 +103,19 @@ class VoiceoverSystem:
             
         return filename
     
+    def _preprocess_text_for_tts(self, text):
+        """Preprocess text to make it more TTS-friendly by converting symbols to words."""
+        if not text:
+            return text
+        
+        # Convert % symbol to "percent" for better TTS pronunciation and display
+        processed_text = text.replace('%', ' percent')
+        
+        # Clean up any double spaces that might have been created
+        processed_text = ' '.join(processed_text.split())
+        
+        return processed_text
+    
     def generate_speech(self, text, voice='nova', speed=1.0, format='mp3', session_id=None, 
                        background_image_path=None, generation_type='youtube_shorts', custom_filename=None):
         """
@@ -120,6 +133,9 @@ class VoiceoverSystem:
             custom_filename: Optional custom filename for the output file
         """
         try:
+            # Preprocess text to convert symbols to words before processing
+            text = self._preprocess_text_for_tts(text)
+            
             # Generate base filename from first line of text if not provided
             if custom_filename is None:
                 # Extract first line and clean it for filename
@@ -603,10 +619,11 @@ class VoiceoverSystem:
         s = s.replace("'", "")  # Simply remove apostrophes
         # Alternative: s = s.replace("'", "`")  # Replace with backtick
         
-        # Escape other FFmpeg special characters
+        # Escape other FFmpeg special characters - but NOT the % character
         s = s.replace('\\', r'\\')
         s = s.replace(':', r'\:')
-        s = s.replace('%', r'\%')
+        # Remove the % escaping that's causing display issues
+        # s = s.replace('%', r'\%')  # This line is causing the problem
         s = s.replace('[', r'\[').replace(']', r'\]')
         
         return s
