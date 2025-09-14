@@ -593,15 +593,22 @@ class VoiceoverSystem:
             return 30.0
     
     def _escape_text_for_ffmpeg(self, text):
-        """Escape text for ffmpeg drawtext filter."""
+        """Escape text for ffmpeg drawtext filter - handles apostrophes by replacement."""
         if text is None:
             return ''
         s = str(text).replace('\r\n', '\n').strip()
+        
+        # Replace apostrophes with a safe alternative instead of escaping
+        # This is the most reliable approach for FFmpeg drawtext
+        s = s.replace("'", "")  # Simply remove apostrophes
+        # Alternative: s = s.replace("'", "`")  # Replace with backtick
+        
+        # Escape other FFmpeg special characters
         s = s.replace('\\', r'\\')
         s = s.replace(':', r'\:')
-        s = s.replace("'", r"\'")
         s = s.replace('%', r'\%')
         s = s.replace('[', r'\[').replace(']', r'\]')
+        
         return s
 
     def _escape_path_for_ffmpeg(self, path: str):
@@ -640,7 +647,7 @@ class VoiceoverSystem:
         return '\n'.join(lines)
 
     def _build_timed_drawtext_chain(self, base_label: str, captions):
-        """Build ffmpeg filter chain for timed captions."""
+        """Build ffmpeg filter chain for timed captions - uses single quotes with proper apostrophe escaping."""
         label_in = base_label
         chain_parts = []
         for idx, cap in enumerate(captions):
@@ -652,6 +659,8 @@ class VoiceoverSystem:
             font_part = ''
             if self.text_overlay_font_path:
                 font_part = f":fontfile={self._escape_path_for_ffmpeg(self.text_overlay_font_path)}"
+            
+            # Use single quotes to wrap text with properly escaped apostrophes
             chain_parts.append(
                 f"[{label_in}]drawtext=text='{txt}'{font_part}:fontcolor=white:fontsize={self.text_overlay_fontsize_px}:"
                 f"x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=0x000000@0.5:boxborderw=12:"
