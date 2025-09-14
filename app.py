@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import json
 import zipfile
 from datetime import datetime
+import re  # Add regex import for API filename processing
 
 # Load environment variables
 load_dotenv()
@@ -806,7 +807,7 @@ def generate_shorts():
             'message': 'Preparing script for YouTube Shorts generation...'
         })
 
-        if bg_file and getattr(bg_file, 'filename', ''):
+        if (bg_file and getattr(bg_file, 'filename', '')):
             os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
             bg_name = secure_filename(bg_file.filename)
             temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{bg_name}")
@@ -872,47 +873,55 @@ def generate_shorts():
                 if not text_content:
                     return f"short_{segment_index:02d}"
                 
-                # Clean the text and extract key words
                 import re
                 
-                # Remove common filler words and get the essence
+                # Clean the text and extract the first sentence
                 text = text_content.strip()
-                
-                # Take first 2-3 meaningful words or first sentence
                 sentences = re.split(r'[.!?]+', text)
                 first_sentence = sentences[0].strip() if sentences else text
                 
-                # Extract meaningful words (skip common filler words)
-                filler_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those'}
+                # Match the specific pattern: "<company name> as on <date>"
+                pattern = r'^(.+?)\s+as\s+on\s+(.+?)(?:\s*[.—]|$)'
+                match = re.search(pattern, first_sentence, re.IGNORECASE)
                 
-                words = re.findall(r'\b\w+\b', first_sentence.lower())
-                meaningful_words = [word for word in words if word not in filler_words and len(word) > 2]
+                if match:
+                    company_name = match.group(1).strip()
+                    date_part = match.group(2).strip()
+                    
+                    # Clean company name for filename
+                    company_clean = re.sub(r'[^\w\s]', '', company_name)
+                    company_clean = re.sub(r'\s+', '_', company_clean)
+                    
+                    # Clean date for filename
+                    date_clean = re.sub(r'[^\w\s]', '', date_part)
+                    date_clean = re.sub(r'\s+', '_', date_clean)
+                    
+                    # Create filename in format: Company_Name_as_on_Date
+                    filename = f"{company_clean}_as_on_{date_clean}"
+                    
+                    # Limit length and ensure it's valid
+                    if len(filename) > 50:
+                        filename = filename[:50]
+                    
+                    return filename
                 
-                if meaningful_words:
-                    # Take first 3-4 meaningful words
-                    key_words = meaningful_words[:4]
-                    filename = '_'.join(key_words).title()
-                    
-                    # Limit length and clean
-                    if len(filename) > 40:
-                        filename = filename[:40]
-                    
-                    # Clean up any remaining problematic characters
-                    filename = re.sub(r'[^\w\-_]', '', filename)
-                    
-                    if len(filename) > 3:  # Ensure we have a meaningful name
-                        return filename
-                
-                # Fallback: use first few words directly
-                words = first_sentence.split()[:3]
+                # Fallback: use first 10 words from the script
+                words = first_sentence.split()[:10]
                 if words:
                     filename = '_'.join(words)
+                    # Clean filename to be filesystem-safe
                     filename = re.sub(r'[^\w\s-]', '', filename)
                     filename = re.sub(r'[-\s]+', '_', filename)
+                    
+                    # Limit length
+                    if len(filename) > 50:
+                        filename = filename[:50]
+                    
+                    # Ensure filename is not empty after cleaning
                     if len(filename) > 3:
-                        return filename[:40]
+                        return filename
                 
-                # Final fallback
+                # Final fallback if everything fails
                 return f"short_{segment_index:02d}"
             
             # Create meaningful filename for this segment
@@ -1215,6 +1224,540 @@ def delete_voiceover(filename):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# API Endpoints for External Integration
+@app.route('/api/v1/generate-shorts', methods=['POST'])
+def api_generate_shorts():
+    """
+    API endpoint for generating YouTube Shorts from external projects.
+    
+    Expected JSON payload:
+    {
+        "script": "Your script with — pause — markers",
+        "voice": "nova",
+        "speed": 1.0,
+        "background_image_url": "https://example.com/background.jpg",
+        "webhook_url": "https://your-app.com/webhook"
+    }
+    
+    Returns (202 Accepted):
+    {
+        "success": true,
+        "session_id": "api_12345-abcd-ef67-8901-234567890abc", 
+        "status": "processing",
+        "message": "YouTube Shorts generation started",
+        "estimated_completion_time": "2-5 minutes",
+        "progress_url": "/api/v1/shorts-status/{session_id}",
+        "webhook_enabled": true
+    }
+    """
+    try:
+        # Validate content type
+        if not request.is_json:
+            return jsonify({
+                'success': False,
+                'error': 'Content-Type must be application/json',
+                'code': 'INVALID_CONTENT_TYPE'
+            }), 400
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid JSON payload',
+                'code': 'INVALID_JSON'
+            }), 400
+        
+        # Extract and validate parameters
+        script = (data.get('script', '') or '').strip()
+        if not script:
+            return jsonify({
+                'success': False,
+                'error': 'Script is required and cannot be empty',
+                'code': 'MISSING_SCRIPT'
+            }), 400
+        
+        voice = data.get('voice', 'nova')
+        if voice not in voiceover_system.available_voices:
+            return jsonify({
+                'success': False,
+                'error': f'Voice must be one of: {", ".join(voiceover_system.available_voices)}',
+                'code': 'INVALID_VOICE'
+            }), 400
+        
+        try:
+            speed = float(data.get('speed', 1.0))
+            if speed < 0.25 or speed > 4.0:
+                return jsonify({
+                    'success': False,
+                    'error': 'Speed must be between 0.25 and 4.0',
+                    'code': 'INVALID_SPEED'
+                }), 400
+        except (TypeError, ValueError):
+            return jsonify({
+                'success': False,
+                'error': 'Speed must be a valid number',
+                'code': 'INVALID_SPEED_FORMAT'
+            }), 400
+        
+        # Optional parameters
+        background_image_url = data.get('background_image_url', '')
+        webhook_url = data.get('webhook_url', '')
+        
+        # Estimate completion time and segments
+        estimated_segments = len(script.split('— pause —')) if '— pause —' in script else len(script.split('\n\n'))
+        estimated_segments = max(1, estimated_segments)
+        
+        # Estimate completion time based on segments (roughly 30-60 seconds per segment)
+        if estimated_segments <= 2:
+            estimated_completion = "1-2 minutes"
+        elif estimated_segments <= 5:
+            estimated_completion = "2-5 minutes"
+        elif estimated_segments <= 10:
+            estimated_completion = "5-8 minutes"
+        else:
+            estimated_completion = "8-15 minutes"
+        
+        # Generate unique session ID with API prefix
+        api_session_id = f"api_{uuid.uuid4()}"
+        
+        print(f"=== API YOUTUBE SHORTS REQUEST ===")
+        print(f"API Session ID: {api_session_id}")
+        print(f"Script length: {len(script)} characters")
+        print(f"Voice: {voice}, Speed: {speed}")
+        print(f"Estimated segments: {estimated_segments}")
+        print(f"Background image URL: {background_image_url}")
+        print(f"Webhook URL: {webhook_url}")
+        
+        # Store session info for status tracking
+        if not hasattr(app, 'api_sessions'):
+            app.api_sessions = {}
+        
+        app.api_sessions[api_session_id] = {
+            'status': 'processing',
+            'created_at': datetime.now().isoformat(),
+            'script': script,
+            'voice': voice,
+            'speed': speed,
+            'background_image_url': background_image_url,
+            'webhook_url': webhook_url,
+            'progress': 0,
+            'message': 'Initializing YouTube Shorts generation...',
+            'estimated_segments': estimated_segments,
+            'estimated_completion': estimated_completion,
+            'current_segment': 0,
+            'result': None,
+            'error': None
+        }
+        
+        # Start background processing
+        socketio.start_background_task(target=process_api_shorts_async, 
+                                     session_id=api_session_id,
+                                     script=script, 
+                                     voice=voice, 
+                                     speed=speed,
+                                     background_image_url=background_image_url,
+                                     webhook_url=webhook_url)
+        
+        # Return 202 Accepted with comprehensive response
+        response = {
+            'success': True,
+            'session_id': api_session_id,
+            'status': 'processing',
+            'message': 'YouTube Shorts generation started',
+            'estimated_completion_time': estimated_completion,
+            'progress_url': f'/api/v1/shorts-status/{api_session_id}',
+            'webhook_enabled': bool(webhook_url)
+        }
+        
+        print(f"API: Returning 202 response: {response}")
+        return jsonify(response), 202  # 202 Accepted for async processing
+        
+    except Exception as e:
+        error_msg = f"API Error: {str(e)}"
+        print(error_msg)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'code': 'INTERNAL_ERROR'
+        }), 500
+
+@app.route('/api/v1/shorts-status/<session_id>', methods=['GET'])
+def api_shorts_status(session_id):
+    """
+    Check the status of a YouTube Shorts generation session.
+    
+    Returns:
+    {
+        "success": true,
+        "session_id": "api_12345-abcd-ef67-8901-234567890abc",
+        "status": "processing|completed|failed",
+        "progress": 75,
+        "message": "Generating video 3 of 4...",
+        "estimated_time_remaining": "1-2 minutes",
+        "created_at": "2025-09-13T10:30:00",
+        "zip_url": "download_link" (when completed),
+        "completed_at": "timestamp" (when completed),
+        "failed_at": "timestamp" (when failed)
+    }
+    """
+    try:
+        if not hasattr(app, 'api_sessions'):
+            app.api_sessions = {}
+        
+        if session_id not in app.api_sessions:
+            return jsonify({
+                'success': False,
+                'error': 'Session not found',
+                'code': 'SESSION_NOT_FOUND'
+            }), 404
+        
+        session_data = app.api_sessions[session_id]
+        
+        # Calculate estimated time remaining
+        progress = session_data.get('progress', 0)
+        if progress < 20:
+            estimated_time_remaining = session_data.get('estimated_completion', '2-5 minutes')
+        elif progress < 50:
+            estimated_time_remaining = "2-4 minutes"
+        elif progress < 80:
+            estimated_time_remaining = "1-2 minutes"
+        else:
+            estimated_time_remaining = "30 seconds"
+        
+        response = {
+            'success': True,
+            'session_id': session_id,
+            'status': session_data['status'],
+            'progress': progress,
+            'message': session_data.get('message', ''),
+            'estimated_time_remaining': estimated_time_remaining,
+            'created_at': session_data.get('created_at')
+        }
+        
+        if session_data['status'] == 'completed' and session_data.get('result'):
+            result = session_data['result']
+            
+            # Construct proper absolute URL based on current request
+            zip_path = result.get('zip_url', '')
+            if zip_path.startswith('/'):
+                # Build absolute URL from current request
+                scheme = request.environ.get('HTTP_X_FORWARDED_PROTO', request.scheme)
+                host = request.environ.get('HTTP_HOST', request.host)
+                zip_url = f"{scheme}://{host}{zip_path}"
+            else:
+                zip_url = zip_path
+            
+            response.update({
+                'zip_url': zip_url,
+                'completed_at': datetime.now().isoformat()
+            })
+            print(f"API Status: Session {session_id} completed with {result.get('count', 0)} videos")
+            print(f"API Status: ZIP URL returned: {zip_url}")
+        elif session_data['status'] == 'failed':
+            response.update({
+                'error': session_data.get('error', 'Unknown error'),
+                'failed_at': datetime.now().isoformat()
+            })
+            print(f"API Status: Session {session_id} failed: {response['error']}")
+        else:
+            print(f"API Status: Session {session_id} - {session_data['status']} - {progress}%")
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        error_msg = f"API Status Error: {str(e)}"
+        print(error_msg)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'code': 'INTERNAL_ERROR'
+        }), 500
+
+def process_api_shorts_async(session_id, script, voice, speed, background_image_url=None, webhook_url=None):
+    """Background task to process YouTube Shorts generation for API requests."""
+    import requests
+    
+    def split_into_scripts(script_text):
+        """Split script into segments using pause markers"""
+        segments = []
+        if '— pause —' in script_text:
+            parts = script_text.split('— pause —')
+        else:
+            parts = script_text.split('\n\n')
+        
+        for part in parts:
+            cleaned = part.strip()
+            if cleaned:
+                segments.append(cleaned)
+        return segments
+    
+    def send_webhook(status, progress, message, **kwargs):
+        """Send webhook notification if webhook_url is provided"""
+        if not webhook_url:
+            return
+        
+        try:
+            payload = {
+                'session_id': session_id,
+                'status': status,
+                'progress': progress,
+                'message': message,
+                **kwargs
+            }
+            
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            print(f"API: Webhook sent to {webhook_url} - Status: {response.status_code}")
+        except Exception as e:
+            print(f"API: Failed to send webhook: {e}")
+    
+    try:
+        with app.app_context():
+            print(f"Starting async processing for API session: {session_id}")
+            
+            # Download background image if URL provided
+            temp_bg_path = None
+            if background_image_url:
+                try:
+                    print(f"API: Downloading background image: {background_image_url}")
+                    response = requests.get(background_image_url, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Create temp file
+                    os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
+                    temp_bg_path = os.path.join(app.config['TEMP_FOLDER'], f"api_bg_{uuid.uuid4()}.jpg")
+                    
+                    with open(temp_bg_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    print(f"API: Background image downloaded: {temp_bg_path}")
+                except Exception as e:
+                    print(f"API: Failed to download background image: {e}")
+                    # Continue without background image
+            
+            # Update session status
+            app.api_sessions[session_id]['status'] = 'processing'
+            app.api_sessions[session_id]['progress'] = 10
+            app.api_sessions[session_id]['message'] = 'Splitting script into segments...'
+            app.api_sessions[session_id]['current_segment'] = 0
+            
+            send_webhook('processing', 10, 'Splitting script into segments...')
+            
+            # Split script into segments
+            segments = split_into_scripts(script)
+            if not segments:
+                raise Exception('No valid segments found in script')
+            
+            print(f"API: Split script into {len(segments)} segments")
+            
+            # Update estimated segments count if different from initial estimate
+            app.api_sessions[session_id]['estimated_segments'] = len(segments)
+            app.api_sessions[session_id]['progress'] = 20
+            app.api_sessions[session_id]['message'] = f'Starting generation of {len(segments)} video segments...'
+            
+            send_webhook('processing', 20, f'Starting generation of {len(segments)} video segments...')
+            
+            # Generate videos for each segment
+            outputs = []
+            file_paths = []
+            
+            for idx, seg in enumerate(segments, start=1):
+                segment_progress = 20 + (idx - 1) * (60 / len(segments))
+                app.api_sessions[session_id]['progress'] = int(segment_progress)
+                app.api_sessions[session_id]['current_segment'] = idx
+                app.api_sessions[session_id]['message'] = f'Generating video {idx} of {len(segments)}...'
+                
+                print(f"API: Generating segment {idx}/{len(segments)}: {seg[:30]}...")
+                
+                # Send webhook for progress updates (every few segments)
+                if idx % 2 == 0 or idx == len(segments):
+                    send_webhook('processing', int(segment_progress), f'Generating video {idx} of {len(segments)}...')
+                
+                # Create meaningful filename
+                def create_api_filename(text_content, segment_index):
+                    if not text_content:
+                        return f"short_{segment_index:02d}"
+                    
+                    sentences = re.split(r'[.!?]+', text_content.strip())
+                    first_sentence = sentences[0].strip() if sentences else text_content
+                    
+                    # Match the specific pattern: "<company name> as on <date>"
+                    pattern = r'^(.+?)\s+as\s+on\s+(.+?)(?:\s*[.—]|$)'
+                    match = re.search(pattern, first_sentence, re.IGNORECASE)
+                    
+                    if match:
+                        company_name = match.group(1).strip()
+                        date_part = match.group(2).strip()
+                        
+                        # Clean company name for filename
+                        company_clean = re.sub(r'[^\w\s]', '', company_name)
+                        company_clean = re.sub(r'\s+', '_', company_clean)
+                        
+                        # Clean date for filename
+                        date_clean = re.sub(r'[^\w\s]', '', date_part)
+                        date_clean = re.sub(r'\s+', '_', date_clean)
+                        
+                        # Create filename in format: Company_Name_as_on_Date
+                        filename = f"{company_clean}_as_on_{date_clean}"
+                        
+                        # Limit length and ensure it's valid
+                        if len(filename) > 40:
+                            filename = filename[:40]
+                        
+                        return filename
+                    
+                    # Fallback: use first 10 words from the script
+                    words = first_sentence.split()[:10]
+                    if words:
+                        filename = '_'.join(words)
+                        # Clean filename to be filesystem-safe
+                        filename = re.sub(r'[^\w\s-]', '', filename)
+                        filename = re.sub(r'[-\s]+', '_', filename)
+                        
+                        # Limit length
+                        if len(filename) > 40:
+                            filename = filename[:40]
+                        
+                        # Ensure filename is not empty after cleaning
+                        if len(filename) > 3:
+                            return filename
+                    
+                    # Final fallback if everything fails
+                    return f"short_{segment_index:02d}"
+                
+                custom_filename = create_api_filename(seg, idx)
+                
+                # Generate the voiceover video
+                result = voiceover_system.generate_speech(
+                    text=seg,
+                    voice=voice,
+                    speed=speed,
+                    format='mp4',
+                    session_id=None,
+                    background_image_path=temp_bg_path,
+                    generation_type='youtube_shorts',
+                    custom_filename=custom_filename
+                )
+                
+                if not result.get('success'):
+                    error_msg = f"Failed to generate segment {idx}: {result.get('error', 'Unknown error')}"
+                    print(f"API: ERROR - {error_msg}")
+                    raise Exception(error_msg)
+                
+                print(f"API: Successfully generated segment {idx}")
+                
+                actual_download_name = f"{custom_filename}.mp4"
+                outputs.append({
+                    'index': idx,
+                    'file_url': result['file_url'],
+                    'duration': result.get('duration'),
+                    'format': result.get('format', 'mp4'),
+                    'download_name': actual_download_name
+                })
+                
+                # Store file path for ZIP creation
+                fp = result.get('file_path')
+                if fp and os.path.exists(fp):
+                    file_paths.append((idx, fp, actual_download_name))
+                    print(f"API: Added file to ZIP queue: {actual_download_name}")
+                else:
+                    print(f"API: WARNING - File not found for segment {idx}: {fp}")
+            
+            # Create ZIP file
+            app.api_sessions[session_id]['progress'] = 85
+            app.api_sessions[session_id]['message'] = 'Creating download package...'
+            
+            send_webhook('processing', 85, 'Creating download package...')
+            
+            # Ensure voiceovers folder exists
+            os.makedirs(voiceover_system.output_folder, exist_ok=True)
+            
+            zip_name = f"api_shorts_{session_id.replace('api_', '')}_{uuid.uuid4().hex[:8]}.zip"
+            zip_path = os.path.join(voiceover_system.output_folder, zip_name)
+            
+            print(f"API: Creating ZIP file: {zip_path} with {len(file_paths)} files")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for idx, fp, download_name in file_paths:
+                    try:
+                        if os.path.exists(fp):
+                            zf.write(fp, download_name)
+                            print(f"API: Added {download_name} to ZIP successfully")
+                        else:
+                            print(f"API: ERROR - File not found when creating ZIP: {fp}")
+                    except Exception as e:
+                        print(f"API: Error adding {download_name} to ZIP: {e}")
+            
+            # Verify ZIP was created
+            if not os.path.exists(zip_path):
+                raise Exception("Failed to create ZIP file")
+            
+            zip_size = os.path.getsize(zip_path)
+            print(f"API: ZIP file created successfully: {zip_path} ({zip_size} bytes)")
+            
+            # Create download URL
+            zip_url = f"/download-voiceover/{zip_name}"
+            
+            # Update session with final result
+            app.api_sessions[session_id]['status'] = 'completed'
+            app.api_sessions[session_id]['progress'] = 100
+            app.api_sessions[session_id]['current_segment'] = len(segments)
+            app.api_sessions[session_id]['message'] = f'Successfully generated {len(outputs)} YouTube Shorts!'
+            app.api_sessions[session_id]['result'] = {
+                'count': len(outputs),
+                'videos': outputs,
+                'zip_url': zip_url,
+                'zip_name': zip_name,
+                'total_segments': len(segments)
+            }
+            
+            # Send completion webhook
+            # Build proper webhook URL using the same logic as status endpoint
+            webhook_zip_url = zip_url
+            if webhook_url:
+                # For webhook, we need to construct a full URL since the webhook recipient 
+                # won't have access to the request context
+                # Use environment variable or default to localhost for webhook URLs
+                webhook_host = os.getenv('WEBHOOK_BASE_URL', 'http://localhost:5000')
+                if zip_url.startswith('/'):
+                    webhook_zip_url = f"{webhook_host}{zip_url}"
+            
+            send_webhook('completed', 100, f'Successfully generated {len(outputs)} YouTube Shorts!', 
+                        zip_url=webhook_zip_url)
+            
+            print(f"API: Completed processing for session {session_id}")
+            print(f"API: Generated {len(outputs)} videos, ZIP: {zip_name}")
+            print(f"API: Webhook ZIP URL: {webhook_zip_url}")
+            
+            # Cleanup background image
+            if temp_bg_path and os.path.exists(temp_bg_path):
+                try:
+                    os.remove(temp_bg_path)
+                    print(f"API: Cleaned up temp background image: {temp_bg_path}")
+                except Exception as e:
+                    print(f"API: Error cleaning up temp file: {e}")
+            
+    except Exception as e:
+        error_msg = f"API Background Error for session {session_id}: {str(e)}"
+        print(error_msg)
+        import traceback
+        print("Full traceback:", flush=True)
+        traceback.print_exc()
+        
+        app.api_sessions[session_id]['status'] = 'failed'
+        app.api_sessions[session_id]['error'] = str(e)
+        app.api_sessions[session_id]['message'] = f'Generation failed: {str(e)}'
+        
+        # Send failure webhook
+        send_webhook('failed', app.api_sessions[session_id].get('progress', 0), 
+                    f'Generation failed: {str(e)}', error=str(e))
+        
+        # Cleanup background image on error
+        if 'temp_bg_path' in locals() and temp_bg_path and os.path.exists(temp_bg_path):
+            try:
+                os.remove(temp_bg_path)
+                print(f"API: Cleaned up temp background image after error: {temp_bg_path}")
+            except Exception:
+                pass
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
@@ -1252,7 +1795,7 @@ if __name__ == '__main__':
         os.makedirs(app.config['PROCESSED_FOLDER'], exist_ok=True)
         # Voiceover folder is managed by VoiceoverSystem, but create if env provided
         voiceover_folder = os.getenv('VOICEOVER_FOLDER')
-        if voiceover_folder:
+        if (voiceover_folder):
             os.makedirs(voiceover_folder, exist_ok=True)
     except Exception as e:
         print(f"Error ensuring folders exist: {e}")
