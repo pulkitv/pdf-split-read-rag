@@ -3,6 +3,7 @@ import uuid
 from flask import Flask, render_template, request, jsonify, send_file, url_for, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 import threading
 from pdf_processor import PDFProcessor
 from rag_system import RAGSystem
@@ -18,7 +19,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Configure Flask using environment variables
+# Configure Flask using environment variables with increased file size limits
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'fallback-secret-key-change-this')
 app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', 'uploads')
 app.config['TEMP_FOLDER'] = os.getenv('TEMP_FOLDER', 'temp')
@@ -29,15 +30,14 @@ app.config['SERVER_NAME'] = os.getenv('SERVER_NAME', 'localhost:5000')
 app.config['APPLICATION_ROOT'] = os.getenv('APPLICATION_ROOT', '/')
 app.config['PREFERRED_URL_SCHEME'] = os.getenv('PREFERRED_URL_SCHEME', 'http')
 
-# Configure file upload limits from environment
-app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 52428800))
+# Configure file upload limits - INCREASED for large PDFs
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 200 * 1024 * 1024))  # 200MB default
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = int(os.getenv('SEND_FILE_MAX_AGE_DEFAULT', 0))
 
 # Session configuration from environment
 app.config['PERMANENT_SESSION_LIFETIME'] = int(os.getenv('PERMANENT_SESSION_LIFETIME', 3600))
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
 app.config['SESSION_COOKIE_HTTPONLY'] = os.getenv('SESSION_COOKIE_HTTPONLY', 'true').lower() == 'true'
-app.config['SESSION_COOKIE_SAMESITE'] = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
 
 # Initialize SocketIO with enhanced configuration for long-running processes
 socketio = SocketIO(
@@ -69,6 +69,50 @@ api_sessions = {}
 # Initialize API session storage for Voiceover API
 api_voiceover_sessions = {}
 
+# Add error handlers for large file uploads and other HTTP errors
+@app.errorhandler(413)
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(error):
+    """Handle files that exceed the maximum size limit - return JSON instead of HTML"""
+    max_size_mb = app.config['MAX_CONTENT_LENGTH'] / (1024 * 1024)
+    print(f"File upload rejected - exceeds {max_size_mb:.0f}MB limit")
+    return jsonify({
+        'success': False,
+        'error': f'File too large. Maximum file size allowed is {max_size_mb:.0f}MB.',
+        'error_code': 'FILE_TOO_LARGE',
+        'max_size_mb': max_size_mb
+    }), 413
+
+@app.errorhandler(400)
+def handle_bad_request(error):
+    """Handle bad requests with JSON response"""
+    print(f"Bad request error: {error}")
+    return jsonify({
+        'success': False,
+        'error': 'Bad request. Please check your file and try again.',
+        'error_code': 'BAD_REQUEST'
+    }), 400
+
+@app.errorhandler(408)
+def handle_request_timeout(error):
+    """Handle request timeouts with JSON response"""
+    print(f"Request timeout error: {error}")
+    return jsonify({
+        'success': False,
+        'error': 'Request timed out. Large files may take longer to process.',
+        'error_code': 'REQUEST_TIMEOUT'
+    }), 408
+
+@app.errorhandler(500)
+def handle_internal_error(error):
+    """Handle internal server errors with JSON response"""
+    print(f"Internal server error: {error}")
+    return jsonify({
+        'success': False,
+        'error': 'Internal server error. Please try again later.',
+        'error_code': 'INTERNAL_ERROR'
+    }), 500
+
 @app.route('/')
 def index():
     """Main page with upload interface"""
@@ -76,55 +120,94 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Handle PDF file upload"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file selected'}), 400
-    
-    file = request.files['file']
-    if file.filename == '' or file.filename is None:
-        return jsonify({'error': 'No file selected'}), 400
-    
-    # Get processing mode from form data
-    processing_mode = request.form.get('mode', 'ocr')  # Default to OCR mode
-    
-    # Check file extension using environment config
-    allowed_extensions = os.getenv('ALLOWED_EXTENSIONS', 'pdf').split(',')
-    if not any(file.filename.lower().endswith(f'.{ext.strip()}') for ext in allowed_extensions):
-        return jsonify({'error': f'Please upload a {", ".join(allowed_extensions).upper()} file'}), 400
-    
-    # Check file size using environment config
-    max_size_mb = int(os.getenv('MAX_FILE_SIZE_MB', 50))
-    if file.content_length and file.content_length > max_size_mb * 1024 * 1024:
-        return jsonify({'error': f'File size must be less than {max_size_mb}MB'}), 400
-    
-    # Generate unique session ID
-    session_id = str(uuid.uuid4())
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{session_id}_{filename}")
-    
-    file.save(filepath)
-    
-    # Store session info with processing mode
-    processing_sessions[session_id] = {
-        'filename': filename,
-        'filepath': filepath,
-        'status': 'uploaded',
-        'mode': processing_mode,
-        'progress': {
-            'splitting': 0,
-            'ocr': 0,
-            'merging': 0,
-            'text_extraction': 0,
-            'summarization': 0
+    """Handle PDF file upload with enhanced large file support"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+        
+        file = request.files['file']
+        if file.filename == '' or file.filename is None:
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+        
+        # Get processing mode from form data
+        processing_mode = request.form.get('mode', 'ocr')  # Default to OCR mode
+        
+        # Check file extension using environment config
+        allowed_extensions = os.getenv('ALLOWED_EXTENSIONS', 'pdf').split(',')
+        if not any(file.filename.lower().endswith(f'.{ext.strip()}') for ext in allowed_extensions):
+            return jsonify({'success': False, 'error': f'Please upload a {", ".join(allowed_extensions).upper()} file'}), 400
+        
+        # Generate unique session ID
+        session_id = str(uuid.uuid4())
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{session_id}_{filename}")
+        
+        # Save the file and check actual size
+        print(f"Saving file: {filename}")
+        file.save(filepath)
+        
+        # Get actual file size after saving
+        actual_file_size = os.path.getsize(filepath)
+        file_size_mb = actual_file_size / (1024 * 1024)
+        
+        print(f"File saved successfully: {filename} ({file_size_mb:.2f}MB)")
+        
+        # Check if file exceeds our processing limits (different from upload limits)
+        max_processing_size_mb = int(os.getenv('MAX_PROCESSING_SIZE_MB', 200))
+        if file_size_mb > max_processing_size_mb:
+            # Clean up the uploaded file
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return jsonify({
+                'success': False, 
+                'error': f'File too large for processing. Maximum size for PDF processing is {max_processing_size_mb}MB. Your file is {file_size_mb:.1f}MB.',
+                'error_code': 'FILE_TOO_LARGE_FOR_PROCESSING',
+                'file_size_mb': round(file_size_mb, 2),
+                'max_size_mb': max_processing_size_mb
+            }), 413
+        
+        # Store session info with processing mode and file size
+        processing_sessions[session_id] = {
+            'filename': filename,
+            'filepath': filepath,
+            'status': 'uploaded',
+            'mode': processing_mode,
+            'file_size_mb': round(file_size_mb, 2),
+            'progress': {
+                'splitting': 0,
+                'ocr': 0,
+                'merging': 0,
+                'text_extraction': 0,
+                'summarization': 0
+            }
         }
-    }
-    
-    return jsonify({
-        'success': True,
-        'session_id': session_id,
-        'filename': filename,
-        'mode': processing_mode
-    })
+        
+        # Provide estimated processing time for large files
+        estimated_time_minutes = 1
+        if file_size_mb > 50:
+            estimated_time_minutes = max(5, int(file_size_mb / 10))  # Rough estimate: 10MB per minute
+        elif file_size_mb > 20:
+            estimated_time_minutes = 3
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'filename': filename,
+            'mode': processing_mode,
+            'file_size_mb': round(file_size_mb, 2),
+            'estimated_time_minutes': estimated_time_minutes,
+            'is_large_file': file_size_mb > 50
+        })
+        
+    except Exception as e:
+        print(f"Upload error: {e}")
+        # Clean up file if it was partially saved
+        try:
+            if 'filepath' in locals() and os.path.exists(filepath):
+                os.remove(filepath)
+        except:
+            pass
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/download/<session_id>')
 def download_file(session_id):
@@ -1187,7 +1270,7 @@ def process_api_shorts_async(session_id, script, voice, speed, background_image_
             # Split the script by pause markers
             current_script = script
             for marker in pause_markers:
-                if marker in current_script:
+                if (marker in current_script):
                     segments = current_script.split(marker)
                     script_segments = [seg.strip() for seg in segments if seg.strip()]
                     break
@@ -1632,6 +1715,256 @@ def api_voiceover():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/generate-voiceover/standalone', methods=['POST'])
+def generate_voiceover_standalone():
+    """Generate standalone voiceover (no background processing, direct response)"""
+    try:
+        print(f"Received standalone voiceover request")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Has files: {bool(request.files)}")
+        
+        # Handle both JSON and form data requests
+        if request.content_type and 'application/json' in request.content_type:
+            # JSON request (no background image)
+            data = request.get_json()
+            text = data.get('text', '').strip()
+            voice = data.get('voice', 'nova')
+            speed = float(data.get('speed', 1.0))
+            format_type = data.get('format', 'mp3')
+            generation_type = data.get('generation_type', 'standalone')
+            background_image = None
+        else:
+            # Form data request (potentially with background image)
+            text = request.form.get('text', '').strip()
+            voice = request.form.get('voice', 'nova')
+            speed = float(request.form.get('speed', 1.0))
+            format_type = request.form.get('format', 'mp3')
+            generation_type = request.form.get('generation_type', 'standalone')
+            background_image = request.files.get('backgroundImage')
+        
+        print(f"Parsed request - text length: {len(text)}, voice: {voice}, speed: {speed}, format: {format_type}")
+        
+        # Validate required fields
+        if not text:
+            return jsonify({'error': 'Text is required'}), 400
+        
+        # Validate format
+        if format_type not in voiceover_system.supported_formats:
+            return jsonify({'error': f'Unsupported format. Use: {", ".join(voiceover_system.supported_formats)}'}), 400
+        
+        # Validate voice
+        if voice not in voiceover_system.available_voices:
+            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
+        
+        # Validate speed
+        if not (0.25 <= speed <= 4.0):
+            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
+        
+        # Handle background image upload
+        background_image_path = None
+        if background_image and background_image.filename:
+            filename = secure_filename(background_image.filename)
+            if filename and filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                background_image_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{uuid.uuid4()}_{filename}")
+                background_image.save(background_image_path)
+                print(f"Background image saved: {background_image_path}")
+        
+        # Generate session ID for tracking
+        session_id = str(uuid.uuid4())
+        
+        print(f"Generating standalone voiceover for session: {session_id}")
+        
+        # Generate voiceover synchronously
+        result = voiceover_system.generate_speech(
+            text=text,
+            voice=voice,
+            speed=speed,
+            format=format_type,
+            session_id=session_id,
+            background_image_path=background_image_path,
+            generation_type=generation_type
+        )
+        
+        # Cleanup background image
+        if background_image_path and os.path.exists(background_image_path):
+            try:
+                os.remove(background_image_path)
+            except Exception:
+                pass
+        
+        if result['success']:
+            # Build full URL for the result
+            base_url = request.url_root.rstrip('/')
+            full_file_url = f"{base_url}{result['file_url']}"
+            
+            return jsonify({
+                'success': True,
+                'session_id': session_id,
+                'file_url': result['file_url'],
+                'full_file_url': full_file_url,
+                'filename': result.get('filename'),
+                'duration': result.get('duration'),
+                'format': result.get('format'),
+                'message': 'Voiceover generated successfully!'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Unknown error'),
+                'session_id': session_id
+            }), 500
+        
+    except Exception as e:
+        print(f"Standalone voiceover generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/generate-voiceover/<session_id>', methods=['POST'])
+def generate_voiceover_with_session(session_id):
+    """Generate voiceover for a specific session (WebSocket-based progress tracking)"""
+    try:
+        print(f"Received session voiceover request for session: {session_id}")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Has files: {bool(request.files)}")
+        
+        # Handle both JSON and form data requests
+        if request.content_type and 'application/json' in request.content_type:
+            # JSON request (no background image)
+            data = request.get_json()
+            text = data.get('text', '').strip()
+            voice = data.get('voice', 'nova')
+            speed = float(data.get('speed', 1.0))
+            format_type = data.get('format', 'mp3')
+            generation_type = data.get('generation_type', 'regular')
+            background_image = None
+        else:
+            # Form data request (potentially with background image)
+            text = request.form.get('text', '').strip()
+            voice = request.form.get('voice', 'nova')
+            speed = float(request.form.get('speed', 1.0))
+            format_type = request.form.get('format', 'mp3')
+            generation_type = request.form.get('generation_type', 'regular')
+            background_image = request.files.get('backgroundImage')
+        
+        print(f"Parsed session request - text length: {len(text)}, voice: {voice}, speed: {speed}, format: {format_type}")
+        
+        # Validate required fields
+        if not text:
+            return jsonify({'error': 'Text is required'}), 400
+        
+        # Validate format
+        if format_type not in voiceover_system.supported_formats:
+            return jsonify({'error': f'Unsupported format. Use: {", ".join(voiceover_system.supported_formats)}'}), 400
+        
+        # Validate voice
+        if voice not in voiceover_system.available_voices:
+            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
+        
+        # Validate speed
+        if not (0.25 <= speed <= 4.0):
+            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
+        
+        # Handle background image upload
+        background_image_path = None
+        if background_image and background_image.filename:
+            filename = secure_filename(background_image.filename)
+            if filename and filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                background_image_path = os.path.join(app.config['TEMP_FOLDER'], f"bg_{session_id}_{filename}")
+                background_image.save(background_image_path)
+                print(f"Background image saved: {background_image_path}")
+        
+        print(f"Generating session voiceover for session: {session_id}")
+        
+        # Start background processing with WebSocket updates
+        def background_voiceover_generation():
+            try:
+                with app.app_context():
+                    print(f"Starting background voiceover generation for session: {session_id}")
+                    
+                    # Emit start event
+                    socketio.emit('voiceover_progress', {
+                        'session_id': session_id,
+                        'progress': 10,
+                        'message': 'Starting voiceover generation...'
+                    }, to=session_id)
+                    
+                    # Generate voiceover
+                    result = voiceover_system.generate_speech(
+                        text=text,
+                        voice=voice,
+                        speed=speed,
+                        format=format_type,
+                        session_id=session_id,
+                        background_image_path=background_image_path,
+                        generation_type=generation_type
+                    )
+                    
+                    if result['success']:
+                        # Emit completion event
+                        socketio.emit('voiceover_complete', {
+                            'session_id': session_id,
+                            'file_url': result['file_url'],
+                            'duration': result.get('duration'),
+                            'format': result.get('format'),
+                            'filename': result.get('filename'),
+                            'message': 'Voiceover generated successfully!'
+                        }, to=session_id)
+                        print(f"Session voiceover completed for session: {session_id}")
+                    else:
+                        # Emit error event
+                        socketio.emit('voiceover_error', {
+                            'session_id': session_id,
+                            'error': result.get('error', 'Unknown error')
+                        }, to=session_id)
+                        print(f"Session voiceover failed for session: {session_id}")
+                    
+                    # Cleanup background image
+                    if background_image_path and os.path.exists(background_image_path):
+                        try:
+                            os.remove(background_image_path)
+                        except Exception:
+                            pass
+                            
+            except Exception as e:
+                print(f"Background session voiceover error: {e}")
+                import traceback
+                traceback.print_exc()
+                socketio.emit('voiceover_error', {
+                    'session_id': session_id,
+                    'error': str(e)
+                }, to=session_id)
+                
+                # Cleanup on error
+                if background_image_path and os.path.exists(background_image_path):
+                    try:
+                        os.remove(background_image_path)
+                    except Exception:
+                        pass
+        
+        # Start background thread
+        thread = threading.Thread(target=background_voiceover_generation)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'message': 'Voiceover generation started. Listen for WebSocket events for progress.'
+        })
+        
+    except Exception as e:
+        print(f"Session voiceover generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Ensure required folders exist
