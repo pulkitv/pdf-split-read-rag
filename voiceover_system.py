@@ -116,7 +116,7 @@ class VoiceoverSystem:
         
         return processed_text
     
-    def generate_speech(self, text, voice='nova', speed=1.0, format='mp3', session_id=None, 
+    def generate_speech(self, text, voice='onyx', speed=1.2, format='mp3', session_id=None, 
                        background_image_path=None, generation_type='youtube_shorts', custom_filename=None):
         """
         Generate speech from text with optional video output

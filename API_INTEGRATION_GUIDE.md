@@ -1,29 +1,41 @@
-# API Integration Guide
+# API Integration Guide - Newspaper Summary Video Generation
 
-This guide provides complete instructions for integrating with both the YouTube Shorts Generation API and the Regular Format Voiceover API to create automated video content from text scripts.
+This guide provides complete instructions for integrating with the Newspaper Summary Project's video generation APIs to create automated video content from PDF newspaper summaries and text scripts.
 
 ## Overview
 
-The APIs allow you to:
+The Newspaper Summary Project offers two powerful APIs for video content generation:
 
 ### YouTube Shorts API
-- Generate multiple short videos from a single script
+- Generate multiple short videos from newspaper summaries or scripts
 - Split content using pause markers (`— pause —`)
 - Create portrait 1080x1920 videos optimized for social media
 - Download individual videos or bulk ZIP files
+- Perfect for breaking news segments and social media content
 
-### Regular Format Voiceover API (NEW!)
-- Generate single landscape 1920x1080 videos from scripts
-- Perfect for presentations, tutorials, and general content
+### Regular Format Voiceover API
+- Generate single landscape 1920x1080 videos from newspaper summaries
+- Perfect for presentations, news broadcasts, and general content
 - Direct MP4/MP3/WAV file downloads
-- No script splitting - treats entire text as one video
+- No script splitting - treats entire text as one comprehensive video
 - Supports multiple output formats
+- Ideal for full newspaper article summaries
 
 Both APIs support:
-- Voice customization and speech speed control
-- Real-time progress tracking
-- Background image integration
-- Webhook notifications (optional)
+- OpenAI TTS voice customization and speech speed control
+- Real-time progress tracking via WebSocket
+- Background image integration for branded content
+- Webhook notifications for automated workflows
+- Processing of newspaper PDF summaries from the main application
+
+## Integration with Newspaper Summary Workflow
+
+These APIs can be integrated into your newspaper processing pipeline:
+
+1. **PDF Upload & Processing** → Main Flask application processes newspaper PDFs
+2. **AI Summarization** → Generate summaries using RAG system
+3. **Video Generation** → Use these APIs to convert summaries to videos
+4. **Content Distribution** → Deploy videos to social media or broadcast systems
 
 ## Quick Start
 
@@ -33,7 +45,12 @@ https://your-domain.com/api/v1/
 ```
 
 ### Authentication
-Currently no authentication required (add API keys if needed in production).
+Currently no authentication required. For production deployment, consider adding API keys:
+```bash
+# Add to .env file
+API_KEY_REQUIRED=true
+VALID_API_KEYS=key1,key2,key3
+```
 
 ## API Endpoints
 
@@ -1045,6 +1062,8 @@ For issues or questions:
 
 ---
 
-**Last Updated**: September 14, 2025  
+**Last Updated**: October 4, 2025  
 **API Version**: v1  
-**Compatible with**: All major programming languages via HTTP/REST
+**Project**: Newspaper Summary PDF Processing with Video Generation  
+**Compatible with**: All major programming languages via HTTP/REST  
+**Flask Application**: Supports WebSocket progress tracking and real-time updates

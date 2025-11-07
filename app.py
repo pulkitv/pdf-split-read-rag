@@ -266,8 +266,8 @@ def generate_voiceover():
             return jsonify({'error': 'Text is required'}), 400
         
         # Get optional parameters with defaults
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
+        voice = data.get('voice', 'onyx')
+        speed = float(data.get('speed', 1.2))
         format_type = data.get('format', 'mp3')
         background_image = request.files.get('background_image')
         generation_type = data.get('generation_type', 'youtube_shorts')  # Default to YouTube Shorts
@@ -428,8 +428,8 @@ def api_generate_shorts_alt():
             return jsonify({'error': 'Script is required'}), 400
         
         # Validate optional parameters
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
+        voice = data.get('voice', 'onyx')
+        speed = float(data.get('speed', 1.2))
         background_image_url = data.get('background_image_url')
         webhook_url = data.get('webhook_url')
         
@@ -490,8 +490,8 @@ def api_generate_shorts():
             return jsonify({'error': 'Script is required'}), 400
         
         # Validate optional parameters
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
+        voice = data.get('voice', 'onyx')
+        speed = float(data.get('speed', 1.2))
         background_image_url = data.get('background_image_url')
         webhook_url = data.get('webhook_url')
         
@@ -651,8 +651,8 @@ def api_generate_voiceover():
             return jsonify({'error': 'Script is required'}), 400
         
         # Validate optional parameters
-        voice = data.get('voice', 'nova')
-        speed = float(data.get('speed', 1.0))
+        voice = data.get('voice', 'onyx')
+        speed = float(data.get('speed', 1.2))
         format_type = data.get('format', 'mp4')
         background_image_url = data.get('background_image_url')
         webhook_url = data.get('webhook_url')
@@ -1729,16 +1729,16 @@ def generate_voiceover_standalone():
             # JSON request (no background image)
             data = request.get_json()
             text = data.get('text', '').strip()
-            voice = data.get('voice', 'nova')
-            speed = float(data.get('speed', 1.0))
+            voice = data.get('voice', 'onyx')
+            speed = float(data.get('speed', 1.2))
             format_type = data.get('format', 'mp3')
             generation_type = data.get('generation_type', 'standalone')
             background_image = None
         else:
             # Form data request (potentially with background image)
             text = request.form.get('text', '').strip()
-            voice = request.form.get('voice', 'nova')
-            speed = float(request.form.get('speed', 1.0))
+            voice = request.form.get('voice', 'onyx')
+            speed = float(request.form.get('speed', 1.2))
             format_type = request.form.get('format', 'mp3')
             generation_type = request.form.get('generation_type', 'standalone')
             background_image = request.files.get('backgroundImage')
@@ -1837,16 +1837,16 @@ def generate_voiceover_with_session(session_id):
             # JSON request (no background image)
             data = request.get_json()
             text = data.get('text', '').strip()
-            voice = data.get('voice', 'nova')
-            speed = float(data.get('speed', 1.0))
+            voice = data.get('voice', 'onyx')
+            speed = float(data.get('speed', 1.2))
             format_type = data.get('format', 'mp3')
             generation_type = data.get('generation_type', 'regular')
             background_image = None
         else:
             # Form data request (potentially with background image)
             text = request.form.get('text', '').strip()
-            voice = request.form.get('voice', 'nova')
-            speed = float(request.form.get('speed', 1.0))
+            voice = request.form.get('voice', 'onyx')
+            speed = float(request.form.get('speed', 1.2))
             format_type = request.form.get('format', 'mp3')
             generation_type = request.form.get('generation_type', 'regular')
             background_image = request.files.get('backgroundImage')
