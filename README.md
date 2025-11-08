@@ -349,3 +349,158 @@ For issues and questions:
 ---
 
 **Perfect for:** News organizations, content creators, accessibility applications, educational institutions, and anyone needing AI-powered document processing with professional voiceover capabilities.
+
+# Background Video Testing Guide
+
+## Quick Start
+
+Run the test suite:
+```bash
+python test_background_video.py
+```
+
+## What It Tests
+
+The test suite validates 7 key scenarios:
+
+### 1. **Initialization & Validation**
+- Verifies VoiceoverSystem loads background video settings
+- Checks if background video files exist
+- Tests `get_background_video_path()` method
+
+### 2. **Short Voiceover (Video Trimming)**
+- Generates ~5-10 second voiceover
+- Background video should be **trimmed** to match audio length
+- Example: 8s audio + 20s video = 8s final video
+
+### 3. **Long Voiceover (Video Looping)**
+- Generates ~30+ second voiceover
+- Background video should **loop** to match audio length
+- Example: 35s audio + 15s video = Video loops ~2.3 times
+
+### 4. **YouTube Shorts Format**
+- Tests portrait format (1080x1920)
+- Uses `shorts_background.mp4`
+- Verifies correct video selection based on generation type
+
+### 5. **Regular Format**
+- Tests landscape format (1920x1080)
+- Uses `regular_background.mp4`
+- Verifies correct video selection based on generation type
+
+### 6. **Text Overlay**
+- Tests caption overlay on background video
+- Verifies text appears on top of video
+- Tests timing synchronization
+
+### 7. **Fallback Mode**
+- Temporarily disables background video
+- Verifies system falls back to waveform visualization
+- Tests error handling
+
+## Test Output
+
+The script provides:
+- ✅ Real-time progress for each test
+- 📊 Detailed summary with pass/fail rates
+- 📁 List of generated test files with sizes
+- 🎬 Console output from FFmpeg processing
+
+## Generated Test Files
+
+Test videos are saved in `voiceovers/` folder with prefix `test_`:
+- `test_short_voiceover.mp4` - Trimming test
+- `test_long_voiceover.mp4` - Looping test
+- `test_youtube_shorts.mp4` - Portrait format
+- `test_regular_format.mp4` - Landscape format
+- `test_text_overlay.mp4` - Caption overlay
+- `test_fallback_waveform.mp4` - Fallback mode
+
+## Example Output
+
+```
+🎬 Background Video Test Suite
+Testing VoiceoverSystem background video functionality
+
+============================================================
+[10:30:15] TEST: Test 1: Initialization & Validation
+============================================================
+[10:30:15] Initializing VoiceoverSystem...
+[10:30:15] Background video enabled: True
+✓ Background videos validated:
+  - Shorts: shorts_background.mp4
+  - Regular: regular_background.mp4
+
+✅ PASSED: Initialization & Validation
+Details: Shorts: shorts_background.mp4, Regular: regular_background.mp4
+
+============================================================
+TEST SUMMARY
+============================================================
+
+Total Tests: 7
+✅ Passed: 7
+❌ Failed: 0
+Success Rate: 100.0%
+
+Generated Test Files:
+------------------------------------------------------------
+  • test_short_voiceover.mp4 (1.23MB)
+  • test_long_voiceover.mp4 (4.56MB)
+  • test_youtube_shorts.mp4 (0.89MB)
+  • test_regular_format.mp4 (1.45MB)
+  • test_text_overlay.mp4 (0.67MB)
+  • test_fallback_waveform.mp4 (0.98MB)
+============================================================
+```
+
+## Requirements
+
+- OpenAI API key set in `.env`
+- Background video files in project root:
+  - `shorts_background.mp4`
+  - `regular_background.mp4`
+- FFmpeg installed and accessible
+- Python dependencies installed
+
+## Troubleshooting
+
+### "Background video not found"
+Ensure `shorts_background.mp4` and `regular_background.mp4` exist in project root.
+
+### "OPENAI_API_KEY not found"
+Add your OpenAI API key to `.env` file:
+```
+OPENAI_API_KEY=sk-...
+```
+
+### FFmpeg errors
+Check console output for detailed FFmpeg error messages. Common issues:
+- FFmpeg not installed
+- Video codec not supported
+- Insufficient permissions
+
+## Manual Testing
+
+You can also test individual scenarios:
+
+```python
+from voiceover_system import VoiceoverSystem
+
+vs = VoiceoverSystem()
+
+# Test short voiceover
+result = vs.generate_speech(
+    text="Short test message.",
+    format='mp4',
+    generation_type='regular'
+)
+print(f"Generated: {result['file_path']}")
+```
+
+## Clean Up
+
+Remove test files:
+```bash
+rm voiceovers/test_*.mp4
+```

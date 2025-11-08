@@ -386,11 +386,6 @@ def download_voiceover(filename):
         if not os.path.exists(file_path):
             return jsonify({'error': 'File not found'}), 404
         
-        # Get file info
-        file_info = voiceover_system.get_file_info(safe_filename)
-        if not file_info:
-            return jsonify({'error': 'Unable to read file information'}), 500
-        
         # Determine MIME type based on file extension
         ext = os.path.splitext(safe_filename)[1].lower()
         if ext == '.mp3':
@@ -1341,7 +1336,7 @@ def process_api_shorts_async(session_id, script, voice, speed, background_image_
                         format='mp4',
                         session_id=segment_session_id,
                         background_image_path=background_image_path,
-                        generation_type='youtube_shorts',
+                        generation_type='youtube_shorts',  # ✅ CRITICAL FIX: This tells the system to use portrait format + shorts_background.mp4
                         custom_filename=custom_filename
                     )
                     
