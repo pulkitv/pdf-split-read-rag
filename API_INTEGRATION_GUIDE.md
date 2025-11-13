@@ -107,26 +107,26 @@ VALID_API_KEYS=key1,key2,key3
   "message": "Successfully generated 3 YouTube Shorts videos!",
   "current_segment": 3,
   "total_segments": 3,
-  "zip_url": "/download-voiceover/api_shorts_581cfa84_ab12cd34.zip",
+  "zip_url": "https://your-domain.com/download-voiceover/api_shorts_581cfa84_ab12cd34.zip",
   "count": 3,
   "videos": [
     {
       "index": 1,
-      "file_url": "/download-voiceover/api_Welcome_Todays_Market_Update.mp4",
+      "file_url": "https://your-domain.com/download-voiceover/api_Welcome_Todays_Market_Update.mp4",
       "duration": 8.5,
       "format": "mp4",
       "download_name": "api_Welcome_Todays_Market_Update.mp4"
     },
     {
       "index": 2,
-      "file_url": "/download-voiceover/api_Apple_Reported_Strong.mp4",
+      "file_url": "https://your-domain.com/download-voiceover/api_Apple_Reported_Strong.mp4",
       "duration": 6.2,
       "format": "mp4",
       "download_name": "api_Apple_Reported_Strong.mp4"
     },
     {
       "index": 3,
-      "file_url": "/download-voiceover/api_Looking_Ahead_Next.mp4",
+      "file_url": "https://your-domain.com/download-voiceover/api_Looking_Ahead_Next.mp4",
       "duration": 7.8,
       "format": "mp4",
       "download_name": "api_Looking_Ahead_Next.mp4"
@@ -210,12 +210,13 @@ VALID_API_KEYS=key1,key2,key3
   "status": "completed",
   "progress": 100,
   "message": "Voiceover generation completed successfully!",
+  "download_url": "https://your-domain.com/api/v1/voiceover/download/api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f",
   "result": {
     "file_url": "https://your-domain.com/download-voiceover/quarterly_review_7f3b2a18.mp4",
+    "download_url": "https://your-domain.com/api/v1/voiceover/download/api_voiceover_7f3b2a18-4c9d-4e8a-b5f6-1a2b3c4d5e6f",
     "filename": "quarterly_review_7f3b2a18.mp4",
     "duration": 45.6,
-    "format": "mp4",
-    "file_size": "12.8 MB"
+    "format": "mp4"
   },
   "script": "Welcome to our quarterly business review...",
   "voice": "nova",
@@ -303,727 +304,260 @@ The endpoint now properly handles various stored URL formats:
 - Direct filenames without path prefixes
 - Malformed URLs with graceful fallback parsing
 
-## Request Parameters
+## ⚠️ CRITICAL: External Project Integration Notes
 
-### Script Format
-- Use `— pause —` to split content into separate videos
-- Each segment becomes one YouTube Short (9:16 portrait format)
-- Optimal length: 30-60 seconds per segment
-- Maximum script length: ~4000 characters
+### Common Issue: Videos Generated But Not Fetchable
 
-### Voice Options
-Available voices:
-- `nova` (recommended) - Clear, professional
-- `alloy` - Neutral, versatile
-- `echo` - Deep, authoritative  
-- `fable` - Warm, friendly
-- `onyx` - Deep, serious
-- `shimmer` - Bright, energetic
+**Problem:** Your external project successfully creates videos but cannot fetch them.
 
-### Speed Options
-- Range: `0.25` to `4.0`
-- Recommended: `1.0` to `1.5`
-- `1.0` = Normal speed
-- `1.2` = Slightly faster (good for news)
-- `1.5` = Fast (good for summaries)
+**Root Causes & Solutions:**
 
-## Integration Examples
+1. **Incorrect Download URL Usage**
+   ```python
+   # ❌ WRONG - Using relative file_url
+   download_response = requests.get(f"{base_url}{result['result']['file_url']}")
+   
+   # ✅ CORRECT - Using dedicated download_url
+   download_response = requests.get(result['result']['download_url'])
+   # OR
+   download_response = requests.get(result['download_url'])
+   ```
 
-### Python Client Example
+2. **URL Path Issues**
+   ```python
+   # ❌ WRONG - Double slashes or missing base URL
+   url = f"{base_url}//download-voiceover/file.mp4"
+   
+   # ✅ CORRECT - Clean URL construction
+   base_url = "https://your-domain.com"
+   download_url = result.get('download_url') or result['result']['download_url']
+   # download_url already includes full path
+   ```
 
+3. **Session Timing Issues**
+   ```python
+   # ❌ WRONG - Trying to download immediately
+   result = api.generate_voiceover(script)
+   download_file(result['session_id'])  # May fail if not completed
+   
+   # ✅ CORRECT - Wait for completion first
+   result = api.generate_voiceover(script)
+   if result['status'] == 'completed':
+       download_file(result['session_id'])
+   ```
+
+### Updated Client Integration Pattern
+
+**For Regular Voiceover API:**
 ```python
 import requests
 import time
-import logging
 
-class YouTubeShortsAPI:
+class VoiceoverClient:
     def __init__(self, base_url):
         self.base_url = base_url.rstrip('/')
-        self.logger = logging.getLogger(__name__)
     
-    def generate_shorts(self, script, voice="nova", speed=1.0, timeout=300):
-        """
-        Generate YouTube Shorts from script with polling for completion.
-        
-        Args:
-            script (str): Text script with — pause — markers
-            voice (str): Voice to use (nova, alloy, echo, fable, onyx, shimmer)
-            speed (float): Speech speed (0.25 to 4.0)
-            timeout (int): Maximum wait time in seconds
-            
-        Returns:
-            dict: Final result with videos and download URLs
-        """
+    def generate_and_download(self, script, output_path, **kwargs):
+        """Complete workflow: generate -> wait -> download"""
         try:
             # Step 1: Start generation
-            self.logger.info(f"Starting YouTube Shorts generation for script: {script[:50]}...")
+            response = requests.post(f"{self.base_url}/api/v1/voiceover/generate", 
+                                   json={"script": script, **kwargs})
+            result = response.json()
             
-            response = requests.post(
-                f"{self.base_url}/api/v1/generate-shorts",
-                json={
-                    "script": script,
-                    "voice": voice,
-                    "speed": speed
-                },
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
+            if not result.get('success'):
+                raise Exception(f"Generation failed: {result.get('error')}")
             
-            if response.status_code != 200:
-                raise Exception(f"API request failed: {response.status_code} - {response.text}")
+            session_id = result['session_id']
+            print(f"Generation started: {session_id}")
             
-            data = response.json()
-            if not data.get('success'):
-                raise Exception(f"API error: {data.get('error', 'Unknown error')}")
+            # Step 2: Poll until completed
+            while True:
+                status_response = requests.get(f"{self.base_url}/api/v1/voiceover/status/{session_id}")
+                status_data = status_response.json()
+                
+                print(f"Status: {status_data['status']} - {status_data.get('progress', 0)}%")
+                
+                if status_data['status'] == 'completed':
+                    break
+                elif status_data['status'] == 'failed':
+                    raise Exception(f"Generation failed: {status_data.get('error')}")
+                
+                time.sleep(3)
             
-            session_id = data['session_id']
-            self.logger.info(f"Generation started. Session ID: {session_id}")
-            self.logger.info(f"Estimated segments: {data.get('estimated_segments', 'unknown')}")
+            # Step 3: Download using the correct endpoint
+            # ✅ Use the dedicated download endpoint
+            download_url = f"{self.base_url}/api/v1/voiceover/download/{session_id}"
             
-            # Step 2: Poll for completion
-            start_time = time.time()
-            last_progress = -1
+            print(f"Downloading from: {download_url}")
+            download_response = requests.get(download_url, stream=True)
+            download_response.raise_for_status()
             
-            while time.time() - start_time < timeout:
-                try:
-                    status_response = requests.get(
-                        f"{self.base_url}/api/v1/shorts-status/{session_id}",
-                        timeout=10
-                    )
-                    
-                    if status_response.status_code != 200:
-                        self.logger.warning(f"Status check failed: {status_response.status_code}")
-                        time.sleep(5)
-                        continue
-                    
-                    status_data = status_response.json()
-                    current_status = status_data.get('status')
-                    progress = status_data.get('progress', 0)
-                    message = status_data.get('message', '')
-                    
-                    # Log progress updates
-                    if progress != last_progress:
-                        self.logger.info(f"Progress: {progress}% - {message}")
-                        last_progress = progress
-                    
-                    if current_status == 'completed':
-                        self.logger.info(f"Generation completed! {status_data.get('count', 0)} videos created")
-                        return status_data
-                    
-                    elif current_status == 'failed':
-                        error_msg = status_data.get('error', 'Unknown error')
-                        raise Exception(f"Generation failed: {error_msg}")
-                    
-                    # Wait before next poll
-                    time.sleep(3)
-                    
-                except requests.RequestException as e:
-                    self.logger.warning(f"Status check request failed: {e}")
-                    time.sleep(5)
-            
-            raise TimeoutError(f"Generation timed out after {timeout} seconds")
-            
-        except Exception as e:
-            self.logger.error(f"YouTube Shorts generation failed: {e}")
-            raise
-    
-    def download_zip(self, zip_url, output_path):
-        """Download the ZIP file containing all generated videos."""
-        try:
-            self.logger.info(f"Downloading ZIP from: {zip_url}")
-            
-            response = requests.get(f"{self.base_url}{zip_url}", stream=True, timeout=60)
-            response.raise_for_status()
-            
+            # Save file
             with open(output_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in download_response.iter_content(chunk_size=8192):
                     f.write(chunk)
             
-            self.logger.info(f"ZIP downloaded successfully: {output_path}")
+            print(f"Downloaded successfully: {output_path}")
             return output_path
             
         except Exception as e:
-            self.logger.error(f"ZIP download failed: {e}")
+            print(f"Error in generate_and_download: {e}")
             raise
 
-# Usage Example
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    
-    api = YouTubeShortsAPI("https://your-domain.com")
-    
-    script = """
-    ABB India reported strong quarterly results today.
-    — pause —
-    The company's revenue grew by 15% year-over-year.
-    — pause —
-    Management expects continued growth in the next quarter.
-    """
-    
-    try:
-        result = api.generate_shorts(
-            script=script,
-            voice="nova",
-            speed=1.2,
-            timeout=300
-        )
-        
-        print(f"✅ Generated {result['count']} videos successfully!")
-        print(f"📦 ZIP Download: {result['zip_url']}")
-        
-        # Download the ZIP file
-        api.download_zip(result['zip_url'], "youtube_shorts.zip")
-        
-        # Print individual video details
-        for video in result.get('videos', []):
-            print(f"🎥 Video {video['index']}: {video['download_name']} ({video['duration']}s)")
-            
-    except Exception as e:
-        print(f"❌ Error: {e}")
+# Usage
+client = VoiceoverClient("https://your-domain.com")
+client.generate_and_download(
+    script="Your newspaper summary text here...",
+    output_path="output_video.mp4",
+    voice="nova",
+    speed=1.2,
+    format="mp4"
+)
 ```
 
-### Python Client for Regular Voiceover
+**For YouTube Shorts API:**
+```python
+class ShortsClient:
+    def __init__(self, base_url):
+        self.base_url = base_url.rstrip('/')
+    
+    def generate_and_download(self, script, output_zip_path, **kwargs):
+        """Complete workflow: generate -> wait -> download ZIP"""
+        try:
+            # Step 1: Start generation
+            response = requests.post(f"{self.base_url}/api/v1/generate-shorts", 
+                                   json={"script": script, **kwargs})
+            result = response.json()
+            
+            if not result.get('success'):
+                raise Exception(f"Generation failed: {result.get('error')}")
+            
+            session_id = result['session_id']
+            print(f"Shorts generation started: {session_id}")
+            
+            # Step 2: Poll until completed
+            while True:
+                status_response = requests.get(f"{self.base_url}/api/v1/shorts-status/{session_id}")
+                status_data = status_response.json()
+                
+                print(f"Status: {status_data['status']} - {status_data.get('progress', 0)}%")
+                
+                if status_data['status'] == 'completed':
+                    break
+                elif status_data['status'] == 'failed':
+                    raise Exception(f"Generation failed: {status_data.get('error')}")
+                
+                time.sleep(3)
+            
+            # Step 3: Download ZIP file
+            # ✅ zip_url already contains full URL
+            zip_url = status_data['zip_url']
+            
+            print(f"Downloading ZIP from: {zip_url}")
+            download_response = requests.get(zip_url, stream=True)
+            download_response.raise_for_status()
+            
+            # Save ZIP file
+            with open(output_zip_path, 'wb') as f:
+                for chunk in download_response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"ZIP downloaded successfully: {output_zip_path}")
+            return {
+                'zip_path': output_zip_path,
+                'video_count': status_data['count'],
+                'videos': status_data['videos']
+            }
+            
+        except Exception as e:
+            print(f"Error in generate_and_download: {e}")
+            raise
+
+# Usage
+client = ShortsClient("https://your-domain.com")
+result = client.generate_and_download(
+    script="Breaking news — pause — Market update — pause — Final thoughts",
+    output_zip_path="shorts_bundle.zip",
+    voice="nova",
+    speed=1.2
+)
+```
+
+### Download URL Reference Guide
+
+**YouTube Shorts API:**
+- `zip_url`: Full URL to download ZIP file containing all videos
+- `videos[].file_url`: Full URLs to individual video files
+- Both URLs are ready to use directly
+
+**Regular Voiceover API:**
+- `download_url` (top-level): Direct download endpoint URL
+- `result.download_url`: Same direct download endpoint URL  
+- `result.file_url`: Alternative file access URL
+- **Recommended**: Use `download_url` for external projects
+
+### Testing Your Integration
 
 ```python
-import requests
-import time
-import logging
-
-class RegularVoiceoverAPI:
-    def __init__(self, base_url):
-        self.base_url = base_url.rstrip('/')
-        self.logger = logging.getLogger(__name__)
+def test_download_urls():
+    """Test script to verify download URLs work correctly"""
     
-    def generate_voiceover(self, script, voice="nova", speed=1.0, format_type="mp4", 
-                          background_image_url=None, webhook_url=None, timeout=300):
-        """
-        Generate regular format voiceover from script.
-        
-        Args:
-            script (str): Text content to convert to voiceover
-            voice (str): Voice to use (nova, alloy, echo, fable, onyx, shimmer)
-            speed (float): Speech speed (0.25 to 4.0)
-            format_type (str): Output format (mp3, wav, mp4)
-            background_image_url (str): Optional background image URL
-            webhook_url (str): Optional webhook for completion notification
-            timeout (int): Maximum wait time in seconds
-            
-        Returns:
-            dict: Final result with file URL and details
-        """
+    # Test regular voiceover
+    print("Testing Regular Voiceover...")
+    voiceover_result = {
+        "session_id": "test_session_123",
+        "status": "completed",
+        "download_url": "https://your-domain.com/api/v1/voiceover/download/test_session_123",
+        "result": {
+            "file_url": "https://your-domain.com/download-voiceover/test_file.mp4",
+            "download_url": "https://your-domain.com/api/v1/voiceover/download/test_session_123"
+        }
+    }
+    
+    # Test the download URLs
+    for url_type, url in [
+        ("Top-level download_url", voiceover_result.get('download_url')),
+        ("Result download_url", voiceover_result['result'].get('download_url')),
+        ("Result file_url", voiceover_result['result'].get('file_url'))
+    ]:
+        print(f"Testing {url_type}: {url}")
         try:
-            # Step 1: Start generation
-            self.logger.info(f"Starting voiceover generation for script: {script[:50]}...")
-            
-            payload = {
-                "script": script,
-                "voice": voice,
-                "speed": speed,
-                "format": format_type
-            }
-            
-            if background_image_url:
-                payload["background_image_url"] = background_image_url
-            if webhook_url:
-                payload["webhook_url"] = webhook_url
-            
-            response = requests.post(
-                f"{self.base_url}/api/v1/voiceover/generate",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            
-            if response.status_code != 202:
-                raise Exception(f"API request failed: {response.status_code} - {response.text}")
-            
-            data = response.json()
-            if not data.get('success'):
-                raise Exception(f"API error: {data.get('error', 'Unknown error')}")
-            
-            session_id = data['session_id']
-            self.logger.info(f"Generation started. Session ID: {session_id}")
-            
-            # Step 2: Poll for completion
-            start_time = time.time()
-            last_progress = -1
-            
-            while time.time() - start_time < timeout:
-                try:
-                    status_response = requests.get(
-                        f"{self.base_url}/api/v1/voiceover/status/{session_id}",
-                        timeout=10
-                    )
-                    
-                    if status_response.status_code != 200:
-                        self.logger.warning(f"Status check failed: {status_response.status_code}")
-                        time.sleep(5)
-                        continue
-                    
-                    status_data = status_response.json()
-                    current_status = status_data.get('status')
-                    progress = status_data.get('progress', 0)
-                    message = status_data.get('message', '')
-                    
-                    # Log progress updates
-                    if progress != last_progress:
-                        self.logger.info(f"Progress: {progress}% - {message}")
-                        last_progress = progress
-                    
-                    if current_status == 'completed':
-                        self.logger.info("Voiceover generation completed!")
-                        return status_data
-                    
-                    elif current_status == 'failed':
-                        error_msg = status_data.get('error', 'Unknown error')
-                        raise Exception(f"Generation failed: {error_msg}")
-                    
-                    # Wait before next poll
-                    time.sleep(3)
-                    
-                except requests.RequestException as e:
-                    self.logger.warning(f"Status check request failed: {e}")
-                    time.sleep(5)
-            
-            raise TimeoutError(f"Generation timed out after {timeout} seconds")
-            
+            response = requests.head(url)  # HEAD request to check availability
+            print(f"  ✅ Status: {response.status_code}")
         except Exception as e:
-            self.logger.error(f"Voiceover generation failed: {e}")
-            raise
+            print(f"  ❌ Error: {e}")
     
-    def download_file(self, session_id, output_path):
-        """Download the generated voiceover file directly."""
-        try:
-            self.logger.info(f"Downloading file for session: {session_id}")
-            
-            response = requests.get(
-                f"{self.base_url}/api/v1/voiceover/download/{session_id}", 
-                stream=True, 
-                timeout=60
-            )
-            response.raise_for_status()
-            
-            with open(output_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            self.logger.info(f"File downloaded successfully: {output_path}")
-            return output_path
-            
-        except Exception as e:
-            self.logger.error(f"File download failed: {e}")
-            raise
-
-# Usage Example
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # Test shorts
+    print("\nTesting YouTube Shorts...")
+    shorts_result = {
+        "zip_url": "https://your-domain.com/download-voiceover/api_shorts_test.zip",
+        "videos": [
+            {"file_url": "https://your-domain.com/download-voiceover/video1.mp4"},
+            {"file_url": "https://your-domain.com/download-voiceover/video2.mp4"}
+        ]
+    }
     
-    api = RegularVoiceoverAPI("https://your-domain.com")
-    
-    script = """
-    Welcome to our quarterly business review. In this presentation, we'll cover 
-    our market performance, key achievements, and strategic initiatives for Q4. 
-    Our revenue growth this quarter exceeded expectations, with a 12% increase 
-    compared to the same period last year. We've successfully launched three 
-    new products and expanded into two additional markets.
-    """
-    
+    # Test ZIP URL
+    print(f"Testing ZIP URL: {shorts_result['zip_url']}")
     try:
-        result = api.generate_voiceover(
-            script=script,
-            voice="nova",
-            speed=1.1,
-            format_type="mp4",
-            background_image_url="https://example.com/corporate-bg.jpg",
-            timeout=300
-        )
-        
-        print(f"✅ Voiceover generated successfully!")
-        print(f"📄 File: {result['result']['filename']}")
-        print(f"⏱️ Duration: {result['result']['duration']}s")
-        print(f"📦 Size: {result['result']['file_size']}")
-        print(f"🔗 URL: {result['result']['file_url']}")
-        
-        # Download the file
-        api.download_file(result['session_id'], f"output.{result['result']['format']}")
-        
+        response = requests.head(shorts_result['zip_url'])
+        print(f"  ✅ ZIP Status: {response.status_code}")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"  ❌ ZIP Error: {e}")
+    
+    # Test individual video URLs
+    for i, video in enumerate(shorts_result['videos']):
+        print(f"Testing Video {i+1}: {video['file_url']}")
+        try:
+            response = requests.head(video['file_url'])
+            print(f"  ✅ Video Status: {response.status_code}")
+        except Exception as e:
+            print(f"  ❌ Video Error: {e}")
+
+# Run the test
+test_download_urls()
 ```
-
-### JavaScript/Node.js Client Example
-
-```javascript
-const axios = require('axios');
-
-class YouTubeShortsAPI {
-    constructor(baseUrl) {
-        this.baseUrl = baseUrl.replace(/\/$/, '');
-    }
-    
-    async generateShorts(script, voice = 'nova', speed = 1.0, timeout = 300000) {
-        try {
-            console.log(`🎬 Starting YouTube Shorts generation...`);
-            
-            // Step 1: Start generation
-            const startResponse = await axios.post(`${this.baseUrl}/api/v1/generate-shorts`, {
-                script,
-                voice,
-                speed
-            }, {
-                headers: { 'Content-Type': 'application/json' },
-                timeout: 30000
-            });
-            
-            if (!startResponse.data.success) {
-                throw new Error(`API error: ${startResponse.data.error}`);
-            }
-            
-            const sessionId = startResponse.data.session_id;
-            console.log(`📋 Session ID: ${sessionId}`);
-            console.log(`📊 Estimated segments: ${startResponse.data.estimated_segments}`);
-            
-            // Step 2: Poll for completion
-            const startTime = Date.now();
-            let lastProgress = -1;
-            
-            while (Date.now() - startTime < timeout) {
-                try {
-                    const statusResponse = await axios.get(
-                        `${this.baseUrl}/api/v1/shorts-status/${sessionId}`,
-                        { timeout: 10000 }
-                    );
-                    
-                    const statusData = statusResponse.data;
-                    const { status, progress, message } = statusData;
-                    
-                    // Log progress updates
-                    if (progress !== lastProgress) {
-                        console.log(`📈 Progress: ${progress}% - ${message}`);
-                        lastProgress = progress;
-                    }
-                    
-                    if (status === 'completed') {
-                        console.log(`✅ Generation completed! ${statusData.count} videos created`);
-                        return statusData;
-                    }
-                    
-                    if (status === 'failed') {
-                        throw new Error(`Generation failed: ${statusData.error}`);
-                    }
-                    
-                    // Wait before next poll
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    
-                } catch (error) {
-                    if (error.code === 'ECONNABORTED') {
-                        console.warn('⚠️ Status check timeout, retrying...');
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        continue;
-                    }
-                    throw error;
-                }
-            }
-            
-            throw new Error(`Generation timed out after ${timeout}ms`);
-            
-        } catch (error) {
-            console.error(`❌ YouTube Shorts generation failed:`, error.message);
-            throw error;
-        }
-    }
-    
-    async downloadZip(zipUrl, outputPath) {
-        const fs = require('fs');
-        
-        try {
-            console.log(`📦 Downloading ZIP from: ${zipUrl}`);
-            
-            const response = await axios.get(`${this.baseUrl}${zipUrl}`, {
-                responseType: 'stream',
-                timeout: 60000
-            });
-            
-            const writer = fs.createWriteStream(outputPath);
-            response.data.pipe(writer);
-            
-            return new Promise((resolve, reject) => {
-                writer.on('finish', () => {
-                    console.log(`✅ ZIP downloaded: ${outputPath}`);
-                    resolve(outputPath);
-                });
-                writer.on('error', reject);
-            });
-            
-        } catch (error) {
-            console.error(`❌ ZIP download failed:`, error.message);
-            throw error;
-        }
-    }
-}
-
-// Usage Example
-async function main() {
-    const api = new YouTubeShortsAPI('https://your-domain.com');
-    
-    const script = `
-        Breaking: Tech stocks surge in early trading today.
-        — pause —
-        Apple and Microsoft lead the rally with gains over 3%.
-        — pause —
-        Analysts remain optimistic about the sector's outlook.
-    `;
-    
-    try {
-        const result = await api.generateShorts(script, 'nova', 1.2);
-        
-        console.log(`🎉 Success! Generated ${result.count} videos`);
-        console.log(`📦 ZIP URL: ${result.zip_url}`);
-        
-        // Download the ZIP
-        await api.downloadZip(result.zip_url, 'youtube_shorts.zip');
-        
-        // Log video details
-        result.videos.forEach(video => {
-            console.log(`🎥 Video ${video.index}: ${video.download_name} (${video.duration}s)`);
-        });
-        
-    } catch (error) {
-        console.error('❌ Error:', error.message);
-    }
-}
-
-main();
-```
-
-### JavaScript/Node.js Client for Regular Voiceover
-
-```javascript
-const axios = require('axios');
-const fs = require('fs');
-
-class RegularVoiceoverAPI {
-    constructor(baseUrl) {
-        this.baseUrl = baseUrl.replace(/\/$/, '');
-    }
-    
-    async generateVoiceover(script, options = {}) {
-        const {
-            voice = 'nova',
-            speed = 1.0,
-            format = 'mp4',
-            backgroundImageUrl = null,
-            webhookUrl = null,
-            timeout = 300000
-        } = options;
-        
-        try {
-            console.log(`🎙️ Starting voiceover generation...`);
-            
-            // Step 1: Start generation
-            const payload = {
-                script,
-                voice,
-                speed,
-                format
-            };
-            
-            if (backgroundImageUrl) payload.background_image_url = backgroundImageUrl;
-            if (webhookUrl) payload.webhook_url = webhookUrl;
-            
-            const startResponse = await axios.post(
-                `${this.baseUrl}/api/v1/voiceover/generate`,
-                payload,
-                {
-                    headers: { 'Content-Type': 'application/json' },
-                    timeout: 30000
-                }
-            );
-            
-            if (!startResponse.data.success) {
-                throw new Error(`API error: ${startResponse.data.error}`);
-            }
-            
-            const sessionId = startResponse.data.session_id;
-            console.log(`📋 Session ID: ${sessionId}`);
-            
-            // Step 2: Poll for completion
-            const startTime = Date.now();
-            let lastProgress = -1;
-            
-            while (Date.now() - startTime < timeout) {
-                try {
-                    const statusResponse = await axios.get(
-                        `${this.baseUrl}/api/v1/voiceover/status/${sessionId}`,
-                        { timeout: 10000 }
-                    );
-                    
-                    const statusData = statusResponse.data;
-                    const { status, progress, message } = statusData;
-                    
-                    // Log progress updates
-                    if (progress !== lastProgress) {
-                        console.log(`📈 Progress: ${progress}% - ${message}`);
-                        lastProgress = progress;
-                    }
-                    
-                    if (status === 'completed') {
-                        console.log(`✅ Voiceover generation completed!`);
-                        return statusData;
-                    }
-                    
-                    if (status === 'failed') {
-                        throw new Error(`Generation failed: ${statusData.error}`);
-                    }
-                    
-                    // Wait before next poll
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    
-                } catch (error) {
-                    if (error.code === 'ECONNABORTED') {
-                        console.warn('⚠️ Status check timeout, retrying...');
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        continue;
-                    }
-                    throw error;
-                }
-            }
-            
-            throw new Error(`Generation timed out after ${timeout}ms`);
-            
-        } catch (error) {
-            console.error(`❌ Voiceover generation failed:`, error.message);
-            throw error;
-        }
-    }
-    
-    async downloadFile(sessionId, outputPath) {
-        try {
-            console.log(`📥 Downloading file for session: ${sessionId}`);
-            
-            const response = await axios.get(
-                `${this.baseUrl}/api/v1/voiceover/download/${sessionId}`,
-                {
-                    responseType: 'stream',
-                    timeout: 60000
-                }
-            );
-            
-            const writer = fs.createWriteStream(outputPath);
-            response.data.pipe(writer);
-            
-            return new Promise((resolve, reject) => {
-                writer.on('finish', () => {
-                    console.log(`✅ File downloaded: ${outputPath}`);
-                    resolve(outputPath);
-                });
-                writer.on('error', reject);
-            });
-            
-        } catch (error) {
-            console.error(`❌ File download failed:`, error.message);
-            throw error;
-        }
-    }
-}
-
-// Usage Example
-async function main() {
-    const api = new RegularVoiceoverAPI('https://your-domain.com');
-    
-    const script = `
-        Good morning everyone and welcome to our quarterly business review.
-        Today's agenda includes market analysis, product updates, and our
-        strategic roadmap for the next quarter. We're excited to share
-        our achievements and outline our vision for continued growth.
-    `;
-    
-    try {
-        const result = await api.generateVoiceover(script, {
-            voice: 'nova',
-            speed: 1.1,
-            format: 'mp4',
-            backgroundImageUrl: 'https://example.com/presentation-bg.jpg'
-        });
-        
-        console.log(`🎉 Success! Generated voiceover`);
-        console.log(`📄 Filename: ${result.result.filename}`);
-        console.log(`⏱️ Duration: ${result.result.duration}s`);
-        console.log(`📦 File Size: ${result.result.file_size}`);
-        console.log(`🔗 Download URL: ${result.result.file_url}`);
-        
-        // Download the file
-        await api.downloadFile(result.session_id, `output.${result.result.format}`);
-        
-    } catch (error) {
-        console.error('❌ Error:', error.message);
-    }
-}
-
-main();
-```
-
-## Error Handling
-
-### Common Error Responses
-
-```json
-{
-  "success": false,
-  "error": "Script is required"
-}
-```
-
-```json
-{
-  "success": false,
-  "error": "Invalid voice. Available voices: nova, alloy, echo, fable, onyx, shimmer"
-}
-```
-
-```json
-{
-  "success": false,
-  "error": "Speed must be between 0.25 and 4.0"
-}
-```
-
-### Status Codes
-- `200` - Success
-- `400` - Bad Request (invalid parameters)
-- `404` - Session not found
-- `500` - Internal Server Error
-
-### Best Practices
-
-1. **Always check the `success` field** in responses
-2. **Implement exponential backoff** for status polling
-3. **Set reasonable timeouts** (5-10 minutes for large scripts)
-4. **Handle network errors gracefully** with retries
-5. **Log progress updates** for debugging
-6. **Validate inputs** before sending requests
-
-## Rate Limiting & Performance
-
-- **Concurrent requests**: Limit to 3-5 simultaneous generations
-- **Script length**: Keep under 4000 characters for best performance
-- **Polling frequency**: Check status every 3-5 seconds
-- **Timeout recommendations**: 
-  - Small scripts (1-3 segments): 2 minutes
-  - Medium scripts (4-8 segments): 5 minutes
-  - Large scripts (9+ segments): 10 minutes
-
-## Video Specifications
-
-### Generated Video Format
-- **Resolution**: 1080x1920 (9:16 portrait)
-- **Format**: MP4 with H.264 encoding
-- **Audio**: AAC encoding, 44.1kHz
-- **Optimized for**: YouTube Shorts, Instagram Reels, TikTok
-
-### File Naming
-- Individual videos: `api_Meaningful_Content_Keywords.mp4`
-- ZIP files: `api_shorts_{session_id}_{random}.zip`
 
 ## Troubleshooting
 
@@ -1039,18 +573,68 @@ main();
    - Server may be under heavy load
    - Increase timeout values
 
-3. **Download URLs not working**
-   - Files may have been cleaned up
-   - Check the full URL path
-   - Try downloading immediately after generation
+3. **❌ Download URLs not working (MOST COMMON)**
+   - **Check URL format**: Use `download_url` not `file_url`
+   - **Verify completion**: Ensure status is 'completed' before downloading
+   - **Full URL required**: Don't manually construct URLs, use provided ones
+   - **Session timing**: Download immediately after completion
+   - **Network issues**: Check firewall/proxy settings
 
-### Debug Tips
+4. **Files not found on server**
+   - Files may have been cleaned up (temporary storage)
+   - Download immediately after generation
+   - Check server disk space
 
-1. **Enable detailed logging** in your client
-2. **Check server logs** for errors
-3. **Validate script format** (ensure proper pause markers)
-4. **Test with shorter scripts** first
-5. **Monitor progress updates** for stuck generations
+### Debug Tips for External Projects
+
+1. **Log all URLs before attempting download**
+   ```python
+   print(f"Session ID: {session_id}")
+   print(f"Status: {status_data['status']}")
+   print(f"Download URL: {status_data.get('download_url')}")
+   print(f"File URL: {status_data.get('result', {}).get('file_url')}")
+   ```
+
+2. **Test with curl first**
+   ```bash
+   # Test if URL is accessible
+   curl -I "https://your-domain.com/api/v1/voiceover/download/your_session_id"
+   ```
+
+3. **Check HTTP status codes**
+   ```python
+   response = requests.get(download_url)
+   print(f"Status Code: {response.status_code}")
+   print(f"Headers: {dict(response.headers)}")
+   if response.status_code != 200:
+       print(f"Error Response: {response.text}")
+   ```
+
+4. **Verify file existence on server**
+   ```python
+   # Add this to your server-side debugging
+   print(f"Files in voiceovers folder: {os.listdir('voiceovers/')}")
+   ```
+
+5. **Enable detailed logging** in your client
+6. **Check server logs** for errors
+7. **Validate script format** (ensure proper pause markers)
+8. **Test with shorter scripts** first
+9. **Monitor progress updates** for stuck generations
+
+### Server-Side Debugging
+
+Add to your server `.env` file for enhanced debugging:
+```bash
+FLASK_DEBUG=true
+VOICEOVER_DEBUG_LOGGING=true
+```
+
+This will enable detailed logging of:
+- File creation and paths
+- Download request processing
+- Session data validation
+- Error stack traces
 
 ## Support
 
@@ -1058,11 +642,12 @@ For issues or questions:
 1. Check this integration guide
 2. Review the troubleshooting section
 3. Enable debug logging in your client
-4. Contact the API maintainer with session IDs and error messages
+4. Test URLs with curl or browser first
+5. Contact the API maintainer with session IDs and error messages
 
 ---
 
-**Last Updated**: October 4, 2025  
+**Last Updated**: November 10, 2025  
 **API Version**: v1  
 **Project**: Newspaper Summary PDF Processing with Video Generation  
 **Compatible with**: All major programming languages via HTTP/REST  

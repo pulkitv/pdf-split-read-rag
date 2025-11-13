@@ -1467,6 +1467,9 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
     try:
         with app.app_context():
             print(f"Starting API voiceover processing for session: {session_id}")
+            print(f"Parameters - voice: {voice}, speed: {speed}, format: {format_type}")
+            print(f"Script length: {len(script)} characters")
+            print(f"Background image URL: {background_image_url}")
             
             # Update session status
             if session_id in api_voiceover_sessions:
@@ -1481,6 +1484,7 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
             background_image_path = None
             if background_image_url:
                 try:
+                    print(f"Downloading background image from: {background_image_url}")
                     import requests
                     response = requests.get(background_image_url, timeout=30)
                     if response.status_code == 200:
@@ -1505,9 +1509,13 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                             'progress': 25,
                             'message': 'Background image downloaded, generating voiceover...'
                         })
+                    else:
+                        print(f"Failed to download background image: HTTP {response.status_code}")
                         
                 except Exception as e:
                     print(f"Failed to download background image: {e}")
+                    import traceback
+                    traceback.print_exc()
                     # Continue without background image
             
             # Update progress before generation
@@ -1515,6 +1523,8 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 'progress': 40,
                 'message': 'Generating voiceover...'
             })
+            
+            print(f"Calling voiceover_system.generate_speech...")
             
             # Generate voiceover using the voiceover system
             result = voiceover_system.generate_speech(
@@ -1527,6 +1537,8 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 generation_type='regular'
             )
             
+            print(f"Voiceover generation result: {result}")
+            
             # Update progress
             api_voiceover_sessions[session_id].update({
                 'progress': 80,
@@ -1538,7 +1550,14 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 base_url = f"{app.config['PREFERRED_URL_SCHEME']}://{app.config['SERVER_NAME']}"
                 full_file_url = f"{base_url}{result['file_url']}"
                 
-                # Update session with success
+                # Build download URL that matches client expectations
+                download_url = f"{base_url}/api/v1/voiceover/download/{session_id}"
+                
+                print(f"Success! File URL: {result['file_url']}")
+                print(f"Full URL: {full_file_url}")
+                print(f"Download URL: {download_url}")
+                
+                # Update session with success - FIXED: Add download_url for client compatibility
                 api_voiceover_sessions[session_id].update({
                     'status': 'completed',
                     'progress': 100,
@@ -1546,10 +1565,13 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                     'result': {
                         'file_url': result['file_url'],  # Keep relative URL for internal use
                         'full_file_url': full_file_url,   # Full URL for external use
+                        'download_url': download_url,     # Direct download URL for client
                         'filename': result.get('filename', f'voiceover.{format_type}'),
                         'duration': result.get('duration'),
                         'format': result.get('format', format_type)
                     },
+                    # ALSO add download_url at top level for backward compatibility
+                    'download_url': download_url,
                     'completed_at': datetime.now().isoformat()
                 })
                 
@@ -1560,20 +1582,25 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                         webhook_data = {
                             'session_id': session_id,
                             'status': 'completed',
+                            'download_url': download_url,  # Include download_url in webhook
                             'result': api_voiceover_sessions[session_id]['result']
                         }
+                        print(f"Sending webhook to: {webhook_url}")
                         requests.post(webhook_url, json=webhook_data, timeout=30)
                     except Exception as e:
                         print(f"Webhook error: {e}")
                 
                 print(f"API Voiceover completed for session: {session_id}")
             else:
+                error_msg = result.get('error', 'Unknown error')
+                print(f"Voiceover generation failed: {error_msg}")
+                
                 # Update session with error
                 api_voiceover_sessions[session_id].update({
                     'status': 'failed',
                     'progress': 0,
-                    'message': f"Generation failed: {result.get('error', 'Unknown error')}",
-                    'error': result.get('error', 'Unknown error'),
+                    'message': f"Generation failed: {error_msg}",
+                    'error': error_msg,
                     'failed_at': datetime.now().isoformat()
                 })
                 
@@ -1584,7 +1611,7 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                         webhook_data = {
                             'session_id': session_id,
                             'status': 'failed',
-                            'error': result.get('error', 'Unknown error')
+                            'error': error_msg
                         }
                         requests.post(webhook_url, json=webhook_data, timeout=30)
                     except Exception as e:
@@ -1596,11 +1623,13 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
             if background_image_path and os.path.exists(background_image_path):
                 try:
                     os.remove(background_image_path)
+                    print(f"Cleaned up background image: {background_image_path}")
                 except Exception:
                     pass
     
     except Exception as e:
-        print(f"API Voiceover processing error for session {session_id}: {e}")
+        error_msg = str(e)
+        print(f"API Voiceover processing error for session {session_id}: {error_msg}")
         import traceback
         traceback.print_exc()
         
@@ -1609,8 +1638,8 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
             api_voiceover_sessions[session_id].update({
                 'status': 'failed',
                 'progress': 0,
-                'message': f"Processing error: {str(e)}",
-                'error': str(e),
+                'message': f"Processing error: {error_msg}",
+                'error': error_msg,
                 'failed_at': datetime.now().isoformat()
             })
         
@@ -1621,7 +1650,7 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 webhook_data = {
                     'session_id': session_id,
                     'status': 'failed',
-                    'error': str(e)
+                    'error': error_msg
                 }
                 requests.post(webhook_url, json=webhook_data, timeout=30)
             except Exception:

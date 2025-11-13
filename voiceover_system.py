@@ -457,6 +457,180 @@ class VoiceoverSystem:
         
         return ';'.join(filter_chain_parts), f"[{current_label}]"
 
+    def _chunk_text_for_tts(self, text, max_chars=3800):
+        """
+        Split long text into chunks suitable for TTS API while preserving sentence boundaries.
+        
+        Args:
+            text: Text to split
+            max_chars: Maximum characters per chunk (slightly less than API limit for safety)
+        
+        Returns:
+            list: List of text chunks
+        """
+        if len(text) <= max_chars:
+            return [text]
+        
+        # Split text into sentences for natural boundaries
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentences:
+            # Test if adding this sentence would exceed the limit
+            test_chunk = f"{current_chunk} {sentence}".strip()
+            
+            if len(test_chunk) <= max_chars:
+                current_chunk = test_chunk
+            else:
+                # Save current chunk if it has content
+                if current_chunk:
+                    chunks.append(current_chunk)
+                
+                # If single sentence is too long, force split it
+                if len(sentence) > max_chars:
+                    # Split long sentence by words
+                    words = sentence.split()
+                    word_chunk = ""
+                    
+                    for word in words:
+                        test_word_chunk = f"{word_chunk} {word}".strip()
+                        if len(test_word_chunk) <= max_chars:
+                            word_chunk = test_word_chunk
+                        else:
+                            if word_chunk:
+                                chunks.append(word_chunk)
+                            word_chunk = word
+                    
+                    if word_chunk:
+                        current_chunk = word_chunk
+                    else:
+                        current_chunk = ""
+                else:
+                    current_chunk = sentence
+        
+        # Add the last chunk if it has content
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+
+    def _generate_multiple_audio_chunks(self, text_chunks, voice, speed, session_id):
+        """
+        Generate multiple audio files from text chunks and combine them.
+        
+        Args:
+            text_chunks: List of text strings to convert
+            voice: Voice to use
+            speed: Speech speed
+            session_id: Session ID for file naming
+        
+        Returns:
+            tuple: (success: bool, combined_audio_path: str, total_duration: float, error_msg: str)
+        """
+        try:
+            print(f"🔊 Generating {len(text_chunks)} audio chunks...")
+            
+            temp_audio_files = []
+            total_duration = 0
+            
+            # Generate audio for each chunk
+            for i, chunk in enumerate(text_chunks):
+                print(f"   Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)...")
+                
+                chunk_filename = f"{session_id}_chunk_{i+1}.mp3"
+                chunk_path = os.path.join(tempfile.gettempdir(), chunk_filename)
+                
+                try:
+                    # Generate TTS for this chunk
+                    response = self.openai_client.audio.speech.create(
+                        model="tts-1",
+                        voice=voice,
+                        input=chunk,
+                        speed=speed,
+                        response_format="mp3"
+                    )
+                    
+                    # Save chunk audio
+                    with open(chunk_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    # Verify file was created
+                    if not os.path.exists(chunk_path) or os.path.getsize(chunk_path) == 0:
+                        raise Exception(f"Failed to create audio chunk {i+1}")
+                    
+                    # Get duration of this chunk
+                    chunk_duration = self._get_audio_duration(chunk_path)
+                    total_duration += chunk_duration
+                    
+                    temp_audio_files.append(chunk_path)
+                    print(f"   ✅ Chunk {i+1} generated: {chunk_duration:.1f}s")
+                    
+                except Exception as chunk_error:
+                    # Cleanup any files created so far
+                    for temp_file in temp_audio_files:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    return False, None, 0, f"Failed to generate audio chunk {i+1}: {str(chunk_error)}"
+            
+            print(f"🔗 Combining {len(temp_audio_files)} audio chunks...")
+            
+            # Combine audio files using FFmpeg
+            combined_filename = f"{session_id}_combined.mp3"
+            combined_path = os.path.join(tempfile.gettempdir(), combined_filename)
+            
+            # Create FFmpeg concat file
+            concat_filename = f"{session_id}_concat.txt"
+            concat_path = os.path.join(tempfile.gettempdir(), concat_filename)
+            
+            with open(concat_path, 'w') as f:
+                for audio_file in temp_audio_files:
+                    # Escape the file path for FFmpeg
+                    escaped_path = audio_file.replace('\\', '\\\\').replace("'", "\\'")
+                    f.write(f"file '{escaped_path}'\n")
+            
+            # Combine audio files
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', concat_path,
+                '-c', 'copy',
+                combined_path
+            ]
+            
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            
+            # Cleanup individual chunk files and concat file
+            for temp_file in temp_audio_files:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            if os.path.exists(concat_path):
+                os.remove(concat_path)
+            
+            if result.returncode == 0:
+                # Verify combined file was created
+                if os.path.exists(combined_path) and os.path.getsize(combined_path) > 0:
+                    print(f"✅ Audio chunks combined successfully: {total_duration:.1f}s total")
+                    return True, combined_path, total_duration, None
+                else:
+                    return False, None, 0, "Combined audio file was not created properly"
+            else:
+                return False, None, 0, f"FFmpeg error combining audio: {result.stderr}"
+                
+        except Exception as e:
+            # Cleanup on error
+            for temp_file in temp_audio_files:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            if 'concat_path' in locals() and os.path.exists(concat_path):
+                os.remove(concat_path)
+            if 'combined_path' in locals() and os.path.exists(combined_path):
+                os.remove(combined_path)
+            
+            return False, None, 0, f"Error in audio chunk generation: {str(e)}"
+
     def generate_speech(self, text, voice='onyx', speed=1.2, format='mp3', 
                        session_id=None, background_image_path=None, 
                        generation_type='regular', custom_filename=None):
@@ -477,48 +651,77 @@ class VoiceoverSystem:
             dict: Result with success status, file paths, and metadata
         """
         try:
+            print(f"🎤 === GENERATE SPEECH START ===")
+            print(f"Session ID: {session_id}")
+            print(f"Text length: {len(text)} chars")
+            print(f"Voice: {voice}")
+            print(f"Speed: {speed}")
+            print(f"Format: {format}")
+            print(f"Generation type: {generation_type}")
+            print(f"Background image: {background_image_path}")
+            
+            # Check OpenAI client
             if not self.openai_client:
+                error_msg = 'OpenAI API key not configured'
+                print(f"❌ ERROR: {error_msg}")
                 return {
                     'success': False,
-                    'error': 'OpenAI API key not configured'
+                    'error': error_msg
                 }
+            print(f"✅ OpenAI client initialized")
             
             # Validate inputs
             if not text or not text.strip():
+                error_msg = 'Text is required'
+                print(f"❌ ERROR: {error_msg}")
                 return {
                     'success': False,
-                    'error': 'Text is required'
+                    'error': error_msg
                 }
             
             if voice not in self.available_voices:
+                error_msg = f'Invalid voice. Use: {", ".join(self.available_voices)}'
+                print(f"❌ ERROR: {error_msg}")
                 return {
                     'success': False,
-                    'error': f'Invalid voice. Use: {", ".join(self.available_voices)}'
+                    'error': error_msg
                 }
             
             if not (0.25 <= speed <= 4.0):
+                error_msg = 'Speed must be between 0.25 and 4.0'
+                print(f"❌ ERROR: {error_msg}")
                 return {
                     'success': False,
-                    'error': 'Speed must be between 0.25 and 4.0'
+                    'error': error_msg
                 }
             
             if format not in self.supported_formats:
+                error_msg = f'Unsupported format. Use: {", ".join(self.supported_formats)}'
+                print(f"❌ ERROR: {error_msg}")
                 return {
                     'success': False,
-                    'error': f'Unsupported format. Use: {", ".join(self.supported_formats)}'
+                    'error': error_msg
                 }
+            print(f"✅ Input validation passed")
             
             # Preprocess text for better TTS
+            print(f"📝 Preprocessing text...")
             processed_text = self._preprocess_text_for_tts(text)
+            print(f"✅ Text preprocessed: {len(processed_text)} chars")
             
-            # Check text length limits
+            # NEW: Handle long text by chunking instead of rejecting
             if len(processed_text) > self.max_input_chars:
-                return {
-                    'success': False,
-                    'error': f'Text too long. Maximum {self.max_input_chars} characters allowed.'
-                }
+                print(f"📄 Text exceeds {self.max_input_chars} chars, splitting into chunks...")
+                text_chunks = self._chunk_text_for_tts(processed_text, self.max_input_chars - 100)  # Safety margin
+                print(f"📄 Split into {len(text_chunks)} chunks")
+                for i, chunk in enumerate(text_chunks):
+                    print(f"   Chunk {i+1}: {len(chunk)} chars")
+            else:
+                print(f"📄 Text fits in single chunk")
+                text_chunks = [processed_text]
             
             # Set video dimensions based on generation type
+            print(f"🎬 Setting video dimensions...")
             if generation_type in ['shorts', 'youtube_shorts']:
                 self.video_width = self.shorts_video_width
                 self.video_height = self.shorts_video_height
@@ -526,76 +729,139 @@ class VoiceoverSystem:
                 self.video_width = self.regular_video_width
                 self.video_height = self.regular_video_height
             
-            print(f"Video dimensions set to: {self.video_width}x{self.video_height} for type: {generation_type}")
+            print(f"✅ Video dimensions set to: {self.video_width}x{self.video_height} for type: {generation_type}")
             
             # Generate filename
+            print(f"📁 Generating filename...")
             if custom_filename:
                 filename_base = custom_filename
+                print(f"Using custom filename: {filename_base}")
             elif session_id:
                 filename_base = f"voiceover_{session_id}"
+                print(f"Using session-based filename: {filename_base}")
             else:
                 # Generate from text content
                 filename_from_text = self._generate_filename_from_text(processed_text)
                 if filename_from_text:
                     filename_base = f"voiceover_{filename_from_text}"
+                    print(f"Using text-based filename: {filename_base}")
                 else:
                     filename_base = f"voiceover_{str(uuid.uuid4())[:8]}"
+                    print(f"Using UUID-based filename: {filename_base}")
             
-            # Create temporary audio file
-            temp_audio_path = os.path.join(tempfile.gettempdir(), f"{filename_base}.mp3")
-            
-            print(f"Generating TTS audio: voice={voice}, speed={speed}")
-            
-            # Generate TTS audio
-            response = self.openai_client.audio.speech.create(
-                model="tts-1",
-                voice=voice,
-                input=processed_text,
-                speed=speed,
-                response_format="mp3"
-            )
-            
-            # Save audio to temporary file
-            with open(temp_audio_path, 'wb') as f:
-                f.write(response.content)
-            
-            print(f"TTS audio generated: {temp_audio_path}")
-            
-            # Get audio duration
-            duration = self._get_audio_duration(temp_audio_path)
-            print(f"Audio duration: {duration} seconds")
-            
-            # Determine final output path and format
-            if format == 'mp4':
-                # Create video
-                final_filename = f"{filename_base}.mp4"
-                final_path = os.path.join(self.output_folder, final_filename)
+            # Generate TTS audio (single chunk or multiple chunks)
+            if len(text_chunks) == 1:
+                print(f"🔊 Generating single TTS audio...")
+                # Single chunk - use existing logic
+                temp_audio_path = os.path.join(tempfile.gettempdir(), f"{filename_base}.mp3")
                 
-                # Create video with audio
-                success = self._create_video_with_audio(
-                    temp_audio_path, 
-                    final_path, 
-                    processed_text, 
-                    background_image_path, 
-                    generation_type,
-                    duration
+                try:
+                    response = self.openai_client.audio.speech.create(
+                        model="tts-1",
+                        voice=voice,
+                        input=text_chunks[0],
+                        speed=speed,
+                        response_format="mp3"
+                    )
+                    print(f"✅ OpenAI TTS response received")
+                    
+                    # Save audio to temporary file
+                    with open(temp_audio_path, 'wb') as f:
+                        f.write(response.content)
+                    print(f"✅ TTS audio saved: {temp_audio_path}")
+                    
+                    # Verify file was created and has content
+                    if os.path.exists(temp_audio_path):
+                        file_size = os.path.getsize(temp_audio_path)
+                        print(f"📊 Audio file size: {file_size} bytes")
+                        if file_size == 0:
+                            raise Exception("Generated audio file is empty")
+                    else:
+                        raise Exception("Audio file was not created")
+                    
+                    # Get audio duration
+                    duration = self._get_audio_duration(temp_audio_path)
+                    print(f"✅ Audio duration: {duration} seconds")
+                    
+                except Exception as tts_error:
+                    error_msg = f"OpenAI TTS API error: {str(tts_error)}"
+                    print(f"❌ TTS ERROR: {error_msg}")
+                    import traceback
+                    traceback.print_exc()
+                    return {
+                        'success': False,
+                        'error': error_msg
+                    }
+            else:
+                print(f"🔊 Generating multiple TTS audio chunks...")
+                # Multiple chunks - use new chunking logic
+                success, temp_audio_path, duration, error_msg = self._generate_multiple_audio_chunks(
+                    text_chunks, voice, speed, filename_base
                 )
                 
                 if not success:
+                    print(f"❌ CHUNKED TTS ERROR: {error_msg}")
+                    return {
+                        'success': False,
+                        'error': error_msg
+                    }
+                
+                print(f"✅ Combined audio duration: {duration} seconds")
+            
+            # Determine final output path and format
+            print(f"🎯 Determining output format and path...")
+            if format == 'mp4':
+                print(f"🎬 Creating video...")
+                # Create video
+                final_filename = f"{filename_base}.mp4"
+                final_path = os.path.join(self.output_folder, final_filename)
+                print(f"   Output path: {final_path}")
+                
+                # Create video with audio
+                try:
+                    success = self._create_video_with_audio(
+                        temp_audio_path, 
+                        final_path, 
+                        processed_text, 
+                        background_image_path, 
+                        generation_type,
+                        duration
+                    )
+                    
+                    if not success:
+                        # Cleanup temp file
+                        if os.path.exists(temp_audio_path):
+                            os.remove(temp_audio_path)
+                        error_msg = 'Failed to create video - FFmpeg error'
+                        print(f"❌ VIDEO ERROR: {error_msg}")
+                        return {
+                            'success': False,
+                            'error': error_msg
+                        }
+                    print(f"✅ Video created successfully")
+                    
+                except Exception as video_error:
                     # Cleanup temp file
                     if os.path.exists(temp_audio_path):
                         os.remove(temp_audio_path)
+                    error_msg = f'Video creation failed: {str(video_error)}'
+                    print(f"❌ VIDEO ERROR: {error_msg}")
+                    import traceback
+                    traceback.print_exc()
                     return {
                         'success': False,
-                        'error': 'Failed to create video'
+                        'error': error_msg
                     }
                 
             else:
+                print(f"🎵 Processing audio only...")
                 # Audio only (mp3 or wav)
                 final_filename = f"{filename_base}.{format}"
                 final_path = os.path.join(self.output_folder, final_filename)
+                print(f"   Output path: {final_path}")
                 
                 if format == 'wav':
+                    print(f"🔄 Converting MP3 to WAV...")
                     # Convert to WAV using FFmpeg
                     ffmpeg_cmd = [
                         'ffmpeg', '-y',
@@ -605,28 +871,67 @@ class VoiceoverSystem:
                         final_path
                     ]
                     
-                    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-                    if result.returncode != 0:
-                        print(f"FFmpeg WAV conversion error: {result.stderr}")
-                        # Cleanup temp file
+                    try:
+                        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            print(f"❌ FFmpeg WAV conversion error: {result.stderr}")
+                            # Cleanup temp file
+                            if os.path.exists(temp_audio_path):
+                                os.remove(temp_audio_path)
+                            return {
+                                'success': False,
+                                'error': 'Failed to convert to WAV format'
+                            }
+                        print(f"✅ WAV conversion successful")
+                    except Exception as wav_error:
+                        error_msg = f'WAV conversion failed: {str(wav_error)}'
+                        print(f"❌ WAV ERROR: {error_msg}")
                         if os.path.exists(temp_audio_path):
                             os.remove(temp_audio_path)
                         return {
                             'success': False,
-                            'error': 'Failed to convert to WAV format'
+                            'error': error_msg
                         }
                 else:
+                    print(f"📁 Moving MP3 file...")
                     # Copy MP3 file
-                    shutil.move(temp_audio_path, final_path)
+                    try:
+                        shutil.move(temp_audio_path, final_path)
+                        print(f"✅ MP3 file moved successfully")
+                    except Exception as move_error:
+                        error_msg = f'Failed to move MP3 file: {str(move_error)}'
+                        print(f"❌ MOVE ERROR: {error_msg}")
+                        return {
+                            'success': False,
+                            'error': error_msg
+                        }
             
             # Cleanup temporary audio file if it still exists
             if os.path.exists(temp_audio_path):
-                os.remove(temp_audio_path)
+                try:
+                    os.remove(temp_audio_path)
+                    print(f"🧹 Cleaned up temp file: {temp_audio_path}")
+                except Exception as cleanup_error:
+                    print(f"⚠️ Could not cleanup temp file: {cleanup_error}")
+            
+            # Verify final file was created
+            if not os.path.exists(final_path):
+                error_msg = f'Final output file was not created: {final_path}'
+                print(f"❌ FINAL ERROR: {error_msg}")
+                return {
+                    'success': False,
+                    'error': error_msg
+                }
+            
+            final_file_size = os.path.getsize(final_path)
+            print(f"📊 Final file size: {final_file_size} bytes")
             
             # Build file URL
             file_url = f"/download-voiceover/{final_filename}"
+            print(f"🔗 File URL: {file_url}")
             
-            print(f"Voiceover generated successfully: {final_path}")
+            print(f"✅ === GENERATE SPEECH SUCCESS ===")
+            print(f"Final path: {final_path}")
             
             return {
                 'success': True,
@@ -637,11 +942,14 @@ class VoiceoverSystem:
                 'format': format,
                 'voice': voice,
                 'speed': speed,
-                'text_length': len(processed_text)
+                'text_length': len(processed_text),
+                'chunks_used': len(text_chunks)
             }
             
         except Exception as e:
-            print(f"Error generating speech: {str(e)}")
+            error_msg = f"Unexpected error in generate_speech: {str(e)}"
+            print(f"❌ === GENERATE SPEECH FAILED ===")
+            print(f"ERROR: {error_msg}")
             import traceback
             traceback.print_exc()
             
@@ -649,12 +957,13 @@ class VoiceoverSystem:
             if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
                 try:
                     os.remove(temp_audio_path)
+                    print(f"🧹 Cleaned up temp file on error")
                 except:
                     pass
             
             return {
                 'success': False,
-                'error': str(e)
+                'error': error_msg
             }
 
     def _get_audio_duration(self, audio_path):
