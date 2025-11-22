@@ -360,7 +360,7 @@ class VoiceoverSystem:
                   f"{words_per_second:.1f} words/sec")
         
         return timed_sections
-
+    
     def _build_timed_drawtext_chain(self, input_label, captions):
         """Build FFmpeg drawtext filter chain with timed captions and proper text wrapping."""
         if not captions:
@@ -399,34 +399,20 @@ class VoiceoverSystem:
             
             return lines
         
-        # Escape text for FFmpeg drawtext (but NOT newlines)
-        def escape_drawtext(s):
-            # Escape special characters for FFmpeg drawtext but preserve newlines
-            s = s.replace('\\', '\\\\')
-            s = s.replace("'", "\\'") 
-            s = s.replace(':', '\\:')
-            s = s.replace('%', '\\%')
-            s = s.replace('[', '\\[')
-            s = s.replace(']', '\\]')
-            # Don't escape newlines - FFmpeg handles \n directly
-            return s
-        
         # Font settings
         fontfile = self.text_overlay_font_path if self.text_overlay_font_path else ''
         fontsize = self.text_overlay_fontsize_px
         margin = self.text_overlay_side_margin_px
         
         # Calculate max characters per line based on video dimensions
-        # INCREASED: Use less conservative character width estimate for wider text
-        char_width_estimate = fontsize * 0.5  # Less conservative (was 0.6)
+        char_width_estimate = fontsize * 0.5
         available_width = self.video_width - (2 * margin)
         max_chars = max(15, int(available_width / char_width_estimate))
         
-        # INCREASED: Allow more characters per line for wider text boxes
         if self.video_width <= 1080:  # Portrait (YouTube Shorts)
-            max_chars = min(max_chars, 22)  # INCREASED from 16 to 22
+            max_chars = min(max_chars, 22)
         else:  # Landscape (Regular videos)
-            max_chars = min(max_chars, 35)  # INCREASED from 25 to 35
+            max_chars = min(max_chars, 35)
         
         print(f"Text overlay settings: fontsize={fontsize}, max_chars={max_chars}, video={self.video_width}x{self.video_height}")
         
@@ -439,25 +425,31 @@ class VoiceoverSystem:
             start = cap['start']
             end = cap['end']
             
-            # Join lines with actual newline characters (not escaped)
-            display_text = '\n'.join([escape_drawtext(line) for line in text_lines])
+            # Join lines with newline - NO ESCAPING needed for textfile approach
+            display_text = '\n'.join(text_lines)
+            
+            # Create a temporary text file for this caption to avoid escaping issues
+            import tempfile
+            text_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
+            text_file.write(display_text)
+            text_file.close()
             
             # Enable expression: show between start and end times
             enable_expr = f"between(t,{start},{end})"
             
-            # Build drawtext filter with proper text positioning
+            # Build drawtext filter using textfile instead of text parameter
             dt_parts = [
-                f"text='{display_text}'",
+                f"textfile='{text_file.name}'",  # Use text file instead of inline text
                 f"fontsize={fontsize}",
                 "fontcolor=white",
                 "bordercolor=black", 
                 "borderw=3",
                 "box=1",
                 "boxcolor=black@0.5",
-                "boxborderw=15",  # REDUCED padding for more text space (was 20)
-                "line_spacing=8",  # REDUCED line spacing for more compact text (was 10)
-                f"x=(w-text_w)/2",  # Center horizontally
-                f"y=h*0.85-text_h",   # Position near bottom with more margin
+                "boxborderw=15",
+                "line_spacing=8",
+                f"x=(w-text_w)/2",
+                f"y=h*0.85-text_h",
                 f"enable='{enable_expr}'"
             ]
             
@@ -471,7 +463,7 @@ class VoiceoverSystem:
             drawtext_filters.append(full_filter)
         
         # Chain all drawtext filters
-        current_label = input_label.strip('[]')  # Remove any existing brackets
+        current_label = input_label.strip('[]')
         filter_chain_parts = []
         
         for i, dt_filter in enumerate(drawtext_filters):
@@ -480,6 +472,129 @@ class VoiceoverSystem:
             current_label = next_label
         
         return ';'.join(filter_chain_parts), f"[{current_label}]"
+    
+    # def _build_timed_drawtext_chain(self, input_label, captions):
+    #     """Build FFmpeg drawtext filter chain with timed captions and proper text wrapping."""
+    #     if not captions:
+    #         return "", input_label
+        
+    #     # Wrap text to fit video width
+    #     def wrap_text_for_video(text, max_chars_per_line):
+    #         """
+    #         Wrap text to fit within video width with better word breaking.
+    #         """
+    #         if len(text) <= max_chars_per_line:
+    #             return [text]
+            
+    #         words = text.split()
+    #         lines = []
+    #         current_line = ""
+            
+    #         for word in words:
+    #             # Test if adding this word would exceed the limit
+    #             test_line = f"{current_line} {word}".strip()
+                
+    #             if len(test_line) <= max_chars_per_line:
+    #                 current_line = test_line
+    #             else:
+    #                 # If current_line has content, save it and start new line
+    #                 if current_line:
+    #                     lines.append(current_line)
+    #                     current_line = word
+    #                 else:
+    #                     # Word itself is too long, force break it
+    #                     current_line = word
+            
+    #         # Add the last line if it has content
+    #         if current_line:
+    #             lines.append(current_line)
+            
+    #         return lines
+        
+    #     # Escape text for FFmpeg drawtext (but NOT newlines)
+    #     def escape_drawtext(s):
+    #         # Escape special characters for FFmpeg drawtext but preserve newlines
+    #         s = s.replace('\\', '\\\\')
+    #         #s = s.replace("'", "\\'")
+    #         #s = s.replace("'", "'\\\\\\''")  # Replace ' with '\'' (close quote, escaped quote, open quote)
+    #         s = s.replace("'", "")  # Simply remove single quotes
+    #         s = s.replace(':', '\\:')
+    #         s = s.replace('%', '\\%')
+    #         s = s.replace('[', '\\[')
+    #         s = s.replace(']', '\\]')
+
+    #         # Don't escape newlines - FFmpeg handles \n directly
+    #         return s
+        
+    #     # Font settings
+    #     fontfile = self.text_overlay_font_path if self.text_overlay_font_path else ''
+    #     fontsize = self.text_overlay_fontsize_px
+    #     margin = self.text_overlay_side_margin_px
+        
+    #     # Calculate max characters per line based on video dimensions
+    #     # INCREASED: Use less conservative character width estimate for wider text
+    #     char_width_estimate = fontsize * 0.5  # Less conservative (was 0.6)
+    #     available_width = self.video_width - (2 * margin)
+    #     max_chars = max(15, int(available_width / char_width_estimate))
+        
+    #     # INCREASED: Allow more characters per line for wider text boxes
+    #     if self.video_width <= 1080:  # Portrait (YouTube Shorts)
+    #         max_chars = min(max_chars, 22)  # INCREASED from 16 to 22
+    #     else:  # Landscape (Regular videos)
+    #         max_chars = min(max_chars, 35)  # INCREASED from 25 to 35
+        
+    #     print(f"Text overlay settings: fontsize={fontsize}, max_chars={max_chars}, video={self.video_width}x{self.video_height}")
+        
+    #     # Build drawtext filters for each caption
+    #     drawtext_filters = []
+    #     for i, cap in enumerate(captions):
+    #         # Wrap text into multiple lines
+    #         text_lines = wrap_text_for_video(cap['text'], max_chars)
+            
+    #         start = cap['start']
+    #         end = cap['end']
+            
+    #         # Join lines with actual newline characters (not escaped)
+    #         display_text = '\n'.join([escape_drawtext(line) for line in text_lines])
+            
+    #         # Enable expression: show between start and end times
+    #         enable_expr = f"between(t,{start},{end})"
+            
+    #         # Build drawtext filter with proper text positioning
+    #         dt_parts = [
+    #             f"text='{display_text}'",
+    #             f"fontsize={fontsize}",
+    #             "fontcolor=white",
+    #             "bordercolor=black", 
+    #             "borderw=3",
+    #             "box=1",
+    #             "boxcolor=black@0.5",
+    #             "boxborderw=15",  # REDUCED padding for more text space (was 20)
+    #             "line_spacing=8",  # REDUCED line spacing for more compact text (was 10)
+    #             f"x=(w-text_w)/2",  # Center horizontally
+    #             f"y=h*0.85-text_h",   # Position near bottom with more margin
+    #             f"enable='{enable_expr}'"
+    #         ]
+            
+    #         if fontfile and os.path.exists(fontfile):
+    #             dt_parts.insert(1, f"fontfile='{fontfile}'")
+            
+    #         # Build the complete filter
+    #         filter_params = ':'.join(dt_parts)
+    #         full_filter = filter_params
+            
+    #         drawtext_filters.append(full_filter)
+        
+    #     # Chain all drawtext filters
+    #     current_label = input_label.strip('[]')  # Remove any existing brackets
+    #     filter_chain_parts = []
+        
+    #     for i, dt_filter in enumerate(drawtext_filters):
+    #         next_label = f"txt{i}"
+    #         filter_chain_parts.append(f"[{current_label}]drawtext={dt_filter}[{next_label}]")
+    #         current_label = next_label
+        
+    #     return ';'.join(filter_chain_parts), f"[{current_label}]"
 
     def _chunk_text_for_tts(self, text, max_chars=3800):
         """

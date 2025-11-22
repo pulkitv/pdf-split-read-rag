@@ -1,3 +1,14 @@
+//15-Nov 2025 update
+Few additions in the system to note
+There is a main github branch where the code runs with voiceover text onn blue image
+
+Then there is a video-with-image branch where the code runs with voiceover on video. Also there is no deletion on this branch so if the code is ever used in UI, then this is the best branch to run that code. OR main. 
+
+Right now we are working on the voice-with-video branch where we are deleting some of the unused APIs to clean the system. 
+
+
+
+
 # Newspaper Summary - PDF Processing & AI Summarization
 
 A comprehensive web application for processing Economic Times newspaper PDFs with AI-powered summarization and voiceover generation capabilities.

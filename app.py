@@ -412,68 +412,6 @@ def download_voiceover(filename):
 
 # YouTube Shorts API Endpoints
 @app.route('/api/v1/generate-shorts', methods=['POST'])
-def api_generate_shorts_alt():
-    """Alternative API endpoint to generate YouTube Shorts videos from script (for backward compatibility)"""
-    try:
-        data = request.get_json()
-        
-        # Validate required fields
-        script = data.get('script', '').strip()
-        if not script:
-            return jsonify({'error': 'Script is required'}), 400
-        
-        # Validate optional parameters
-        voice = data.get('voice', 'onyx')
-        speed = float(data.get('speed', 1.2))
-        background_image_url = data.get('background_image_url')
-        webhook_url = data.get('webhook_url')
-        
-        # Validation
-        if voice not in voiceover_system.available_voices:
-            return jsonify({'error': f'Invalid voice. Use: {", ".join(voiceover_system.available_voices)}'}), 400
-        
-        if not (0.25 <= speed <= 4.0):
-            return jsonify({'error': 'Speed must be between 0.25 and 4.0'}), 400
-        
-        # Generate session ID
-        session_id = f"api_{uuid.uuid4()}"
-        
-        # Initialize session tracking
-        api_sessions[session_id] = {
-            'status': 'queued',
-            'progress': 0,
-            'message': 'Request queued for processing...',
-            'script': script,
-            'voice': voice,
-            'speed': speed,
-            'background_image_url': background_image_url,
-            'webhook_url': webhook_url,
-            'created_at': datetime.now().isoformat(),
-            'estimated_segments': len(script.split('— pause —')) if '— pause —' in script else len(script.split('\n\n')),
-            'current_segment': 0
-        }
-        
-        # Start background processing
-        thread = threading.Thread(
-            target=process_api_shorts_async,
-            args=(session_id, script, voice, speed, background_image_url, webhook_url)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({
-            'success': True,
-            'session_id': session_id,
-            'message': 'YouTube Shorts generation started',
-            'status_url': f'/api/v1/shorts/status/{session_id}',
-            'estimated_segments': api_sessions[session_id]['estimated_segments']
-        }), 202
-        
-    except Exception as e:
-        print(f"API Shorts Error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/v1/shorts/generate', methods=['POST'])
 def api_generate_shorts():
     """API endpoint to generate YouTube Shorts videos from script"""
     try:
@@ -584,56 +522,7 @@ def api_shorts_status(session_id):
         print(f"API Status Error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/v1/shorts-status/<session_id>', methods=['GET'])
-def api_shorts_status_alt(session_id):
-    """Alternative endpoint for YouTube Shorts status (for backward compatibility)"""
-    try:
-        if (session_id not in api_sessions):
-            return jsonify({'error': 'Session not found'}), 404
-        
-        session_data = api_sessions[session_id].copy()
-        
-        # Build proper ZIP URL if completed and promote it to top level
-        if (session_data['status'] == 'completed' and 'result' in session_data):
-            result = session_data['result']
-            zip_url = result.get('zip_url')
-            
-            if zip_url:
-                # Build full URL for API response
-                if zip_url.startswith('/'):
-                    base_url = request.url_root.rstrip('/')
-                    full_zip_url = f"{base_url}{zip_url}"
-                else:
-                    full_zip_url = zip_url
-                
-                # Promote zip_url to top level for client compatibility
-                session_data['zip_url'] = full_zip_url
-                
-                # Also add video details for completed shorts
-                segments = result.get('segments', 1)
-                session_data['count'] = segments
-                session_data['current_segment'] = segments
-                session_data['total_segments'] = segments
-                
-                # Create video array if not present
-                if 'videos' not in session_data:
-                    session_data['videos'] = []
-                    for i in range(segments):
-                        session_data['videos'].append({
-                            'index': i + 1,
-                            'file_url': f"/download-voiceover/api_shorts_{session_id}_part_{i+1}.mp4",
-                            'duration': 8.5,
-                            'format': 'mp4',
-                            'download_name': f"api_shorts_{session_id}_part_{i+1}.mp4"
-                        })
-        
-        return jsonify(session_data)
-        
-    except Exception as e:
-        print(f"API Status Error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# New Voiceover API Endpoints
+# Regular Voiceover API Endpoints
 @app.route('/api/v1/voiceover/generate', methods=['POST'])
 def api_generate_voiceover():
     """API endpoint to generate regular format voiceover videos from script"""
@@ -1336,7 +1225,7 @@ def process_api_shorts_async(session_id, script, voice, speed, background_image_
                         format='mp4',
                         session_id=segment_session_id,
                         background_image_path=background_image_path,
-                        generation_type='youtube_shorts',  # ✅ CRITICAL FIX: This tells the system to use portrait format + shorts_background.mp4
+                        generation_type='youtube_shorts',
                         custom_filename=custom_filename
                     )
                     
@@ -1348,7 +1237,8 @@ def process_api_shorts_async(session_id, script, voice, speed, background_image_
                             'file_url': result['file_url'],
                             'duration': result.get('duration'),
                             'text': segment[:100] + '...' if len(segment) > 100 else segment,
-                            'filename': f"{filename_base}.mp4"
+                            'filename': f"{filename_base}.mp4",
+                            'segment_index': i  # ✅ ADD: Store the original segment index
                         })
                         print(f"Successfully generated segment {i+1} with filename: {filename_base}.mp4")
                     else:
@@ -1374,13 +1264,13 @@ def process_api_shorts_async(session_id, script, voice, speed, background_image_
             zip_path = os.path.join(voiceover_system.output_folder, zip_filename)
             
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                for i, video_path in enumerate(video_files):
+                for result_data in segment_results:  # ✅ FIXED: Use segment_results instead of enumerate
+                    video_path = result_data['file_path']
                     if os.path.exists(video_path):
-                        # Use the descriptive filename based on content
-                        filename_base = create_filename_from_text(script_segments[i], i + 1)
-                        video_filename = f"{filename_base}.mp4"
+                        # Use the filename that was already generated and stored
+                        video_filename = result_data['filename']
                         zip_file.write(video_path, video_filename)
-                        print(f"Added {video_filename} to ZIP")
+                        print(f"Added {video_filename} to ZIP (segment {result_data['segment']})")
             
             print(f"Created ZIP file: {zip_path}")
             
