@@ -1378,12 +1378,10 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                     import requests
                     response = requests.get(background_image_url, timeout=30)
                     if response.status_code == 200:
-                        # Extract filename from URL or generate one
                         import urllib.parse
                         parsed_url = urllib.parse.urlparse(background_image_url)
                         filename = os.path.basename(parsed_url.path) or f"bg_{uuid.uuid4()}.jpg"
                         
-                        # Ensure it has a valid image extension
                         if not filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
                             filename += '.jpg'
                         
@@ -1394,7 +1392,6 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                         
                         print(f"Downloaded background image: {background_image_path}")
                         
-                        # Update progress
                         api_voiceover_sessions[session_id].update({
                             'progress': 25,
                             'message': 'Background image downloaded, generating voiceover...'
@@ -1406,7 +1403,34 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                     print(f"Failed to download background image: {e}")
                     import traceback
                     traceback.print_exc()
-                    # Continue without background image
+            
+            # ✅ ADD: Helper function to create filename from text (same as YouTube Shorts)
+            def create_filename_from_text(text):
+                """Create a safe filename from the first 10 words of the text"""
+                if not text:
+                    return "voiceover"
+                
+                # Clean the text and get first 10 words
+                words = re.sub(r'[^\w\s]', '', text).split()[:10]
+                if not words:
+                    return "voiceover"
+                
+                # Join words and create safe filename
+                filename_base = '_'.join(words).lower()
+                
+                # Remove any remaining unsafe characters and limit length
+                filename_base = re.sub(r'[^\w\-_]', '', filename_base)[:50]
+                
+                # Ensure it's not empty after cleaning
+                if not filename_base:
+                    return "voiceover"
+                
+                return filename_base
+            
+            # ✅ MODIFIED: Generate custom filename from script WITHOUT any prefix
+            custom_filename = create_filename_from_text(script)
+            
+            print(f"Generated custom filename: {custom_filename}")
             
             # Update progress before generation
             api_voiceover_sessions[session_id].update({
@@ -1416,7 +1440,7 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
             
             print(f"Calling voiceover_system.generate_speech...")
             
-            # Generate voiceover using the voiceover system
+            # ✅ MODIFIED: Pass custom_filename to generate_speech
             result = voiceover_system.generate_speech(
                 text=script,
                 voice=voice,
@@ -1424,7 +1448,8 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 format=format_type,
                 session_id=session_id,
                 background_image_path=background_image_path,
-                generation_type='regular'
+                generation_type='regular',
+                custom_filename=custom_filename  # ✅ Pass just the text-based filename
             )
             
             print(f"Voiceover generation result: {result}")
@@ -1447,20 +1472,19 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 print(f"Full URL: {full_file_url}")
                 print(f"Download URL: {download_url}")
                 
-                # Update session with success - FIXED: Add download_url for client compatibility
+                # Update session with success
                 api_voiceover_sessions[session_id].update({
                     'status': 'completed',
                     'progress': 100,
                     'message': 'Voiceover generation completed successfully!',
                     'result': {
-                        'file_url': result['file_url'],  # Keep relative URL for internal use
-                        'full_file_url': full_file_url,   # Full URL for external use
-                        'download_url': download_url,     # Direct download URL for client
-                        'filename': result.get('filename', f'voiceover.{format_type}'),
+                        'file_url': result['file_url'],
+                        'full_file_url': full_file_url,
+                        'download_url': download_url,
+                        'filename': result.get('filename', f'{custom_filename}.{format_type}'),
                         'duration': result.get('duration'),
                         'format': result.get('format', format_type)
                     },
-                    # ALSO add download_url at top level for backward compatibility
                     'download_url': download_url,
                     'completed_at': datetime.now().isoformat()
                 })
@@ -1472,7 +1496,7 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                         webhook_data = {
                             'session_id': session_id,
                             'status': 'completed',
-                            'download_url': download_url,  # Include download_url in webhook
+                            'download_url': download_url,
                             'result': api_voiceover_sessions[session_id]['result']
                         }
                         print(f"Sending webhook to: {webhook_url}")
@@ -1485,7 +1509,6 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 error_msg = result.get('error', 'Unknown error')
                 print(f"Voiceover generation failed: {error_msg}")
                 
-                # Update session with error
                 api_voiceover_sessions[session_id].update({
                     'status': 'failed',
                     'progress': 0,
@@ -1494,7 +1517,6 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                     'failed_at': datetime.now().isoformat()
                 })
                 
-                # Send webhook if provided
                 if webhook_url:
                     try:
                         import requests
@@ -1523,7 +1545,6 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
         import traceback
         traceback.print_exc()
         
-        # Update session with error
         if session_id in api_voiceover_sessions:
             api_voiceover_sessions[session_id].update({
                 'status': 'failed',
@@ -1533,7 +1554,6 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
                 'failed_at': datetime.now().isoformat()
             })
         
-        # Send webhook if provided
         if webhook_url:
             try:
                 import requests
@@ -1546,13 +1566,12 @@ def process_api_voiceover_async(session_id, script, voice, speed, format_type, b
             except Exception:
                 pass
         
-        # Cleanup on error
-        if background_image_path and os.path.exists(background_image_path):
+        if 'background_image_path' in locals() and background_image_path and os.path.exists(background_image_path):
             try:
                 os.remove(background_image_path)
             except Exception:
                 pass
-
+            
 @app.route('/api/v1/search', methods=['POST'])
 def api_search():
     """API endpoint for searching documents"""
